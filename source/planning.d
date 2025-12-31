@@ -13,7 +13,7 @@ import std.json;
 
 import omspec_ipc;
 
-private int MAX_FILES_PER_CHUNK = 2;
+private int MAX_FILES_PER_CHUNK = 3;
 private string[] ALLOWED_EXTENSIONS = [".txt", ".tif", ".npy"];
 private int MIN_BANDS_NEEDED = 4;
 
@@ -36,11 +36,11 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth) {
     
     scan_directory_recursive(root_path, 0, maxDepth, found_dirs);
 
+    bool[string] found_bases; 
+    MultiSpectralImageGroup[string] found_multispectral_images;
+
     foreach(ds; found_dirs) {
         auto entries = dirEntries(ds.path, SpanMode.shallow);
-        
-        bool[string] found_bases; 
-        MultiSpectralImageGroup[string] found_multispectral_images;
         
         fileLogger.infof("Scanning directory: %s", ds.path);
         foreach(entry; entries) {
@@ -79,10 +79,10 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth) {
             found_multispectral_images[img_base].bands ~= img_band;
             found_multispectral_images[img_base].fname[img_band] = entry.name;
         }
-
-        DatasetChunk[] chunks = get_chunks(found_multispectral_images, MAX_FILES_PER_CHUNK);
-        total_plan ~= chunks;
     }
+
+    DatasetChunk[] chunks = get_chunks(found_multispectral_images, MAX_FILES_PER_CHUNK);
+    total_plan ~= chunks;
 
     return total_plan;
 }
