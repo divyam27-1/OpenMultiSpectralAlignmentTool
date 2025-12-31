@@ -9,6 +9,7 @@ import std.string;
 import std.logger;
 import std.datetime.systime : SysTime, Clock;
 import std.conv : to;
+import std.json;
 
 import omspec_ipc;
 
@@ -84,6 +85,40 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth) {
     }
 
     return total_plan;
+}
+
+public void save_plan_to_json(DatasetChunk[] chunks, string output_path) {
+    JSONValue[] json_chunks;
+
+    foreach (size_t i, chunk; chunks) {
+        JSONValue j_chunk;
+        j_chunk["chunk_id"] = i + 1;
+        j_chunk["image_count"] = chunk.images.length;
+
+        JSONValue[] j_images;
+        foreach (img; chunk.images) {
+            JSONValue j_img;
+
+            string sample_path = img.fname.values[0];
+            string b_name = baseName(sample_path).stripExtension();
+
+            auto idx = b_name.lastIndexOf('_');
+            j_img["base_name"] = (idx != -1) ? b_name[0 .. idx] : b_name;
+            j_img["bands"] = JSONValue(img.fname);
+            
+            j_images ~= j_img;
+        }
+        
+        j_chunk["images"] = j_images;
+        json_chunks ~= j_chunk;
+    }
+
+    JSONValue final_root = JSONValue(json_chunks);
+
+    // Write to file with pretty printing for debugging
+    std.file.write(output_path, final_root.toPrettyString());
+    
+    fileLogger.info("Plan successfully serialized to: " ~ output_path);
 }
 
 /** * Recursive discovery of folders containing files

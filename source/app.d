@@ -49,6 +49,10 @@ void main(string[] args) {
     DatasetChunk[] plan = generate_plan(target, maxDepth);
 
     writeln("\nTotal Chunks to process: ", plan.length);
+
+    string planOutputPath = target ~ "/plan.json";
+    save_plan_to_json(plan, planOutputPath);
+
     writeln("Ready to Spawn Workers.");
 	writeln("--------------------------------------------------");
 }
