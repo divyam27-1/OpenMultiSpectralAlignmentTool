@@ -4,6 +4,7 @@ import std.stdio;
 import std.file;
 import std.path;
 import std.algorithm;
+import std.range;
 import std.array;
 import std.string;
 import std.logger;
@@ -121,24 +122,27 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path) {
     fileLogger.info("Plan successfully serialized to: " ~ output_path);
 }
 
-/** * Recursive discovery of folders containing files
- */
+// Recursive discovery of folders containing files
 private void scan_directory_recursive(string currentPath, int currentDepth, int maxDepth, ref Dataset[] datasets) {
     if (currentDepth > maxDepth) return;
-
     if (!exists(currentPath) || !isDir(currentPath)) return;
 
-    auto entries = dirEntries(currentPath, SpanMode.shallow).array;
-    long fCount = entries.filter!(e => e.isFile).count;
+    // Use a lazy range to find if ANY file matches our criteria
+    auto validFiles = dirEntries(currentPath, SpanMode.shallow)
+                      .filter!(e => e.isFile && 
+                               ALLOWED_EXTENSIONS.canFind(extension(e.name).toLower()));
 
-    if (fCount > 0) {
-        datasets ~= Dataset(currentPath, fCount);
+    // Use walkLength or a loop to get the count without loading the files into memory
+    long validCount = validFiles.walkLength;
+
+    if (validCount > 0) {
+        datasets ~= Dataset(currentPath, validCount);
+        fileLogger.infof("Valid dataset found: %s (%d candidate files)", currentPath, validCount);
     }
 
-    foreach (entry; entries) {
-        if (entry.isDir) {
-            scan_directory_recursive(entry.name, currentDepth + 1, maxDepth, datasets);
-        }
+    auto subDirs = dirEntries(currentPath, SpanMode.shallow).filter!(e => e.isDir);
+    foreach (dir; subDirs) {
+        scan_directory_recursive(dir.name, currentDepth + 1, maxDepth, datasets);
     }
 }
 
