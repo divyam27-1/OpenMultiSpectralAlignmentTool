@@ -15,3 +15,4 @@ openmultispectralalignmenttool-test-*
 *.o
 *.obj
 *.lst
+python_3_11_14/

@@ -50,7 +50,7 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth) {
             // std.path functions
             string extn = extension(entry.name); 
             string base = baseName(entry.name, extn); // Get filename without path or extension
-            
+
             if (!ALLOWED_EXTENSIONS.canFind(extn.toLower())) {
 				fileLogger.warningf("extension %s not allowed", extn);
 				continue;

@@ -7,6 +7,7 @@ import std.file;
 
 import omspec_ipc;
 import planning;
+import process_control;
 
 void main(string[] args) {
     // Default values
@@ -31,18 +32,18 @@ void main(string[] args) {
         return;
     }
 
-    // Default to align if no mode is specified
-    if (!testMode && !tilingMode) alignMode = true;
+    // Default to align if no mode is 
+    // TODO: after implementing actual python workers uncomment this
+    // if (!testMode && !tilingMode) alignMode = true;
 
-    string modeStr = testMode ? "TESTING" : (tilingMode ? "TILING" : "ALIGNMENT");
+    TaskMode mode = alignMode ? TaskMode.ALIGN : 
+        (testMode ? TaskMode.TEST : (tilingMode ? TaskMode.TILING : TaskMode.MOCK));
 
     writeln("--- Open Multispectral Alignment Tool (omspec) ---");
-    writeln("Mode:   ", modeStr);
+    writeln("Mode:   ", mode);
     writeln("Target: ", target);
     writeln("Depth:  ", maxDepth);
     writeln("--------------------------------------------------");
-
-	Thread.sleep(dur!"msecs"(250));
 
 	writeln("Generating Process Plan...");
 
