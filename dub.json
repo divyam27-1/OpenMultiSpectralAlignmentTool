@@ -1,0 +1,11 @@
+{
+	"authors": [
+		"Divyam Tiwari"
+	],
+	"copyright": "Copyright © 2025, Divyam Tiwari",
+	"description": "Open Multispectral Alignment Tool",
+	"license": "proprietary",
+	"name": "openmultispectralalignmenttool",
+	"targetPath": "bin",
+	"targetName": "omspec"
+}

@@ -1,0 +1,17 @@
+.dub
+docs.json
+__dummy.html
+docs/
+bin/
+/openmultispectralalignmenttool
+openmultispectralalignmenttool.so
+openmultispectralalignmenttool.dylib
+openmultispectralalignmenttool.dll
+openmultispectralalignmenttool.a
+openmultispectralalignmenttool.lib
+openmultispectralalignmenttool-test-*
+*.exe
+*.pdb
+*.o
+*.obj
+*.lst
