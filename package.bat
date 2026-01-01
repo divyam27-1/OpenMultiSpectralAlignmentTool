@@ -33,6 +33,9 @@ robocopy python_3_11_14 %DIST_DIR%\python_3_11_14 /E /R:0 /W:0 /COPY:DAT /DCOPY:
 :: Copy the License
 copy LICENSE.txt %DIST_DIR%
 
+:: Copy the README
+copy README.md %DIST_DIR%
+
 echo ---------------------------------------------------
 echo Build Complete: %DIST_DIR%
 echo You can now ZIP this folder for distribution.
