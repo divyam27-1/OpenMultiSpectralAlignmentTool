@@ -13,10 +13,15 @@ import std.conv : to;
 import std.json;
 
 import omspec_ipc;
+import config;
 
-private int MAX_FILES_PER_CHUNK = 3;
-private string[] ALLOWED_EXTENSIONS = [".txt", ".tif", ".npy"];
-private int MIN_BANDS_NEEDED = 4;
+private int MAX_FILES_PER_CHUNK;
+private string[] ALLOWED_EXTENSIONS;
+private int MIN_BANDS_NEEDED;
+private string[] BANDS_ALLOWED;
+
+// Config setup
+private Config cfg;
 
 SysTime current_time;
 string log_filename;
@@ -35,6 +40,12 @@ static this()
  */
 public DatasetChunk[] generate_plan(string root_path, int maxDepth)
 {
+    cfg = loadConfig(buildPath(thisExePath().dirName, "omspec.cfg"));
+    MAX_FILES_PER_CHUNK = cfg.max_files_per_chunk;
+    ALLOWED_EXTENSIONS = cfg.allowed_extensions;
+    MIN_BANDS_NEEDED = cfg.min_bands_needed;
+    BANDS_ALLOWED = cfg.bands;
+
     DatasetChunk[] total_plan;
     Dataset[] found_dirs;
 
@@ -57,7 +68,7 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth)
             string extn = extension(entry.name);
             string base = baseName(entry.name, extn); // Get filename without path or extension
 
-            if (!ALLOWED_EXTENSIONS.canFind(extn.toLower()))
+            if (!ALLOWED_EXTENSIONS.canFind(extn.toUpper()))
             {
                 fileLogger.warningf("extension %s not allowed", extn);
                 continue;
@@ -73,7 +84,13 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth)
             }
 
             string img_base = base[0 .. img_base_idx];
-            string img_band = base[img_base_idx + 1 .. $].toLower();
+            string img_band = base[img_base_idx + 1 .. $].toUpper();
+
+            if (!BANDS_ALLOWED.canFind(img_band))
+            {
+                fileLogger.warningf("Band %s in file %s not recognized", img_band, base);
+                continue;
+            }
 
             // Check 'Set' existence using 'in' operator
             if (img_base !in found_bases)
@@ -147,7 +164,7 @@ private void scan_directory_recursive(string currentPath, int currentDepth, int 
     // Use a lazy range to find if ANY file matches our criteria
     auto validFiles = dirEntries(currentPath, SpanMode.shallow)
         .filter!(e => e.isFile &&
-                ALLOWED_EXTENSIONS.canFind(extension(e.name).toLower()));
+                ALLOWED_EXTENSIONS.canFind(extension(e.name).toUpper()));
 
     // Use walkLength or a loop to get the count without loading the files into memory
     long validCount = validFiles.walkLength;

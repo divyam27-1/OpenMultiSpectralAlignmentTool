@@ -21,7 +21,7 @@ void main(string[] args)
 
     // Default values
     string target = getcwd();
-    int maxDepth = 3;
+    int maxDepth = cfg.scan_max_depth;
     bool alignMode = false;
     bool testMode = false;
     bool tilingMode = false;
@@ -44,10 +44,6 @@ void main(string[] args)
         writeln(cfg.toString());
         return;
     }
-
-    // Default to align if no mode is 
-    // TODO: after implementing actual python workers uncomment this
-    // if (!testMode && !tilingMode) alignMode = true;
 
     TaskMode mode = alignMode ? TaskMode.ALIGN : (testMode ? TaskMode.TEST
             : (tilingMode ? TaskMode.TILING : TaskMode.MOCK));

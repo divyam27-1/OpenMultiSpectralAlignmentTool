@@ -32,7 +32,7 @@ def main():
             print(f"Task chunk {task_chunk} does not contain 'base_name' in 'images'.")
             sys.exit(1)
         try:
-            print(f"[Python] Starting processing task chunk {task_chunk} with base image name: {image_base_name}")
+            #print(f"[Python] Starting processing task chunk {task_chunk} with base image name: {image_base_name}")
             band_obj = image.get("bands", None)
             if band_obj is None:
                 print(f"[Python] FATAL: No 'bands' found for image {image_base_name}")
@@ -58,7 +58,7 @@ def main():
     time.sleep(random.uniform(1.0, 3.0))
     
     # simulate random chance of failure
-    if random.random() < 0.30:
+    if random.random() < 0.23:
         print(f"[Python] FAILURE: Data Corruption on chunk {task_chunk}")
         sys.exit(2) # error code 2 means process should be retried due to some logical error
     
