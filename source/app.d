@@ -8,6 +8,7 @@ import std.path;
 import std.conv : to;
 import std.json;
 
+import appstate;
 import omspec_ipc;
 import planning;
 import process_control;
@@ -47,12 +48,16 @@ void main(string[] args)
 
     TaskMode mode = alignMode ? TaskMode.ALIGN : (testMode ? TaskMode.TEST
             : (tilingMode ? TaskMode.TILING : TaskMode.MOCK));
+    
 
     writeln("--- Open Multispectral Alignment Tool (omspec) ---");
     writeln("Mode:   ", mode);
     writeln("Target: ", target);
     writeln("Depth:  ", maxDepth);
     writeln("--------------------------------------------------");
+
+    setTargetPath(absolutePath(target));
+    writeln("Target Path set to: ", targetPath);
 
     writeln("Generating Process Plan...");
 

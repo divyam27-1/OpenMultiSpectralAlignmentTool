@@ -12,6 +12,7 @@ import std.datetime.systime : SysTime, Clock;
 import std.conv : to;
 import std.json;
 
+import appstate;
 import omspec_ipc;
 import config;
 
@@ -27,12 +28,13 @@ SysTime current_time;
 string log_filename;
 FileLogger fileLogger;
 
+// TODO: Make file logger not generate at module load time instead generate using an initLogger() method called from main only after targetPath is set
 static this()
 {
     if (!exists("log"))
         mkdir("log");
     current_time = Clock.currTime();
-    log_filename = "log\\planning_" ~ current_time.toISOExtString().replace(":", "-") ~ ".log";
+    log_filename = buildPath(targetPath, "log", "planning_" ~ current_time.toISOExtString().replace(":", "-") ~ ".log");
     fileLogger = new FileLogger(log_filename, LogLevel.info, CreateFolder.yes);
 }
 

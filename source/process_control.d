@@ -18,18 +18,21 @@ import std.datetime.systime : SysTime, Clock;
 import std.logger;
 import std.exception : enforce;
 
+import appstate;
 import config;
 
 SysTime current_time;
 string log_filename;
 FileLogger fileLogger;
 
+// TODO: Make file logger not generate at module load time instead generate using an initLogger() method called from main only after targetPath is set
 static this()
 {
     if (!exists("log"))
         mkdir("log");
     current_time = Clock.currTime();
-    log_filename = "log\\processing_" ~ current_time.toISOExtString().replace(":", "-") ~ ".log";
+    log_filename = buildPath(targetPath, "log",
+        "processing_" ~ current_time.toISOExtString().replace(":", "-") ~ ".log");
     fileLogger = new FileLogger(log_filename, LogLevel.info, CreateFolder.yes);
 }
 
@@ -228,18 +231,18 @@ public class ProcessRunner
         string scriptName;
         final switch (mode) // 'final switch' ensures you handle every TaskMode enum
         {
-            case TaskMode.ALIGN:
-                scriptName = "align_worker.py";
-                break;
-            case TaskMode.TEST:
-                scriptName = "test_worker.py";
-                break;
-            case TaskMode.TILING:
-                scriptName = "tiling_worker.py";
-                break;
-            case TaskMode.MOCK:
-                scriptName = "mock_worker.py";
-                break;
+        case TaskMode.ALIGN:
+            scriptName = "align_worker.py";
+            break;
+        case TaskMode.TEST:
+            scriptName = "test_worker.py";
+            break;
+        case TaskMode.TILING:
+            scriptName = "tiling_worker.py";
+            break;
+        case TaskMode.MOCK:
+            scriptName = "mock_worker.py";
+            break;
         }
 
         this.scriptPath = buildPath(thisExePath().dirName(), "..", "engine", scriptName).absolutePath();
