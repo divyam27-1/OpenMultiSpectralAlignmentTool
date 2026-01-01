@@ -6,12 +6,13 @@ public struct Dataset {
 }
 
 public struct MultiSpectralImageGroup {
-	string directory;
+	long file_size;
 	string[] bands;
 	string[string] fname;
 }
 
 public struct DatasetChunk {
+	size_t chunk_size;
+	size_t file_count;
 	MultiSpectralImageGroup[] images;
-	long file_count;
 }

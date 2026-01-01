@@ -4,6 +4,9 @@ import core.time;
 import std.stdio;
 import std.getopt;
 import std.file;
+import std.path;
+import std.conv : to;
+import std.json;
 
 import omspec_ipc;
 import planning;
@@ -51,9 +54,18 @@ void main(string[] args) {
 
     writeln("\nTotal Chunks to process: ", plan.length);
 
-    string planOutputPath = target ~ "/plan.json";
+    string planOutputPath = buildPath(target, "plan.json").absolutePath();
     save_plan_to_json(plan, planOutputPath);
 
     writeln("Ready to Spawn Workers.");
 	writeln("--------------------------------------------------");
+
+    writeln("Spawning Workers...");
+
+    string python_path = buildPath(thisExePath().dirName(), "..", "python_3_11_14", "install", "python.exe").absolutePath();
+    ProcessController controller = get_runner(mode, python_path);
+
+    controller.execute_plan(planOutputPath);
+
+    writeln("--------------------------------------------------");
 }

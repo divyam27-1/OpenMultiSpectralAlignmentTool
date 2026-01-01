@@ -26,7 +26,7 @@ static this() {
     if (!exists("log")) mkdir("log");
     current_time = Clock.currTime();
     log_filename = "log\\planning_" ~ current_time.toISOExtString().replace(":", "-") ~ ".log";
-    fileLogger = new FileLogger(log_filename, LogLevel.info);
+    fileLogger = new FileLogger(log_filename, LogLevel.info, CreateFolder.yes);
 }
 
 /** * Scans the target and builds the Chunk array.
@@ -73,12 +73,12 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth) {
 
                 // Fixed: No named arguments in D. Initialize then set.
                 MultiSpectralImageGroup group;
-                group.directory = ds.path;
                 found_multispectral_images[img_base] = group;
             }
 
             found_multispectral_images[img_base].bands ~= img_band;
             found_multispectral_images[img_base].fname[img_band] = entry.name;
+            found_multispectral_images[img_base].file_size += getSize(entry.name);
         }
     }
 
@@ -95,6 +95,7 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path) {
         JSONValue j_chunk;
         j_chunk["chunk_id"] = i + 1;
         j_chunk["image_count"] = chunk.images.length;
+        j_chunk["chunk_size"] = chunk.chunk_size;
 
         JSONValue[] j_images;
         foreach (img; chunk.images) {
@@ -106,6 +107,7 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path) {
             auto idx = b_name.lastIndexOf('_');
             j_img["base_name"] = (idx != -1) ? b_name[0 .. idx] : b_name;
             j_img["bands"] = JSONValue(img.fname);
+            j_img["size"] = img.file_size;
             
             j_images ~= j_img;
         }
@@ -150,6 +152,7 @@ private DatasetChunk[] get_chunks(MultiSpectralImageGroup[string] images, int MA
     DatasetChunk[] chunks;
     DatasetChunk current_chunk;
     current_chunk.file_count = 0;
+    current_chunk.chunk_size = 0;
 
     foreach(img_base; images.keys) {
         auto img_group = images[img_base];
@@ -164,10 +167,12 @@ private DatasetChunk[] get_chunks(MultiSpectralImageGroup[string] images, int MA
             chunks ~= current_chunk;
             current_chunk = DatasetChunk();
             current_chunk.file_count = 0;
+            current_chunk.chunk_size = 0;
         }
 
         current_chunk.images ~= img_group;
         current_chunk.file_count++;
+        current_chunk.chunk_size += img_group.file_size;
     }
 
     if (current_chunk.file_count > 0) {
