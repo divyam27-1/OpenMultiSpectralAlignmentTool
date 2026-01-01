@@ -66,9 +66,12 @@ void main(string[] args)
 
     string python_path = buildPath(thisExePath().dirName(), "..", "python_3_11_14", "install", "python.exe")
         .absolutePath();
-    ProcessController controller = get_runner(mode, python_path);
 
-    controller.execute_plan(planOutputPath);
+    ProcessRunner runner = get_runner(mode, python_path);
+    Scheduler controller = new Scheduler(runner, planOutputPath);
 
+    controller.execute_plan();
+
+    writeln("\nAll tasks completed.");
     writeln("--------------------------------------------------");
 }

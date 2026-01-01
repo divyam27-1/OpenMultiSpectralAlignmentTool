@@ -10,14 +10,14 @@ def main():
 
     plan_path = sys.argv[1]
     task_chunk = int(sys.argv[2])
-    if task_chunk < 1:
+    if task_chunk < 0:
         print(f"Invalid task chunk number provided: {task_chunk}, expected a positive integer.")
         sys.exit(1)
 
     with open(plan_path) as f:
         plan = json.load(f)
     
-    task = plan[task_chunk - 1]
+    task = plan[task_chunk]
     task_images_paths = task.get("images", None)
     if task_images_paths is None:
         print(f"Task chunk {task_chunk} does not contain 'images'.")

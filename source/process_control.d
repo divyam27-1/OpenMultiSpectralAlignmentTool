@@ -10,6 +10,7 @@ import std.json;
 import std.file;
 import std.conv : to;
 import std.array;
+import std.algorithm;
 import std.container.dlist;
 import std.math : pow;
 import std.path;
@@ -54,91 +55,32 @@ struct ProcessControlBlock
     int attempt;
 }
 
-public class ProcessController
-{
-    private string pythonPath;
-    private string scriptPath;
-
-    this(string pyPath, string sPath)
-    {
-        this.pythonPath = pyPath;
-        this.scriptPath = sPath;
-    }
-
-    public void finish_chunk(string json_path, size_t chunk_id, int attempt = 0)
-    {
-        int MAX_ATTEMPTS = 3;
-        ProcessResult res = this.run_chunk(json_path, chunk_id);
-
-        if (res.success)
-        {
-            return;
-        }
-
-        if (res.exitCode == 1)
-        {
-            return;
-        }
-
-        // Error code 2 means process failed due to logical error, we need to retry
-        if (res.exitCode == 2 && attempt < MAX_ATTEMPTS)
-        {
-            // Exponential backoff before retrying
-            int backoffTime = cast(int) pow(1.42, attempt) * 1000; // in milliseconds
-            fileLogger.warningf("Retrying Chunk %d after %d ms (Attempt %d/%d)",
-                chunk_id, backoffTime, attempt + 1, MAX_ATTEMPTS);
-            Thread.sleep(dur!"msecs"(backoffTime));
-            return this.finish_chunk(json_path, chunk_id, attempt + 1);
-        }
-
-        fileLogger.errorf("Chunk %d failed after %d attempts. Skipping.", chunk_id, MAX_ATTEMPTS);
-
-        return;
-    }
-
-    private Pid spawn_worker(string jsonPath, size_t chunk_id)
-    {
-        try
-        {
-            fileLogger.infof("Spawning process for Chunk %d", chunk_id);
-            return spawnProcess([
-                pythonPath, scriptPath, jsonPath, chunk_id.to!string
-            ]);
-        }
-        catch (Exception e)
-        {
-            fileLogger.errorf("System error spawning Chunk %d: %s", chunk_id, e.msg);
-            return Pid.init; // Return an invalid Pid
-        }
-    }
-}
-
 public class Scheduler
 {
-    private ProcessController runner;
+    private ProcessRunner runner;
     private string planPath;
 
     private DList!size_t taskQueue;
     private ProcessControlBlock[Pid] pcbMap;
-    private size_t memoryUsageMB;
+    private size_t memoryUsageMB = 0;
     private size_t maxMemoryMB;
 
     private int maxRetries = 3;
     private int tickIntervalMS = 500;
 
-    this(ProcessController runner, string planPath)
+    this(ProcessRunner runner, string planPath, size_t maxMemoryMB = 2048)
     {
         this.runner = runner;
         this.planPath = planPath;
+        this.maxMemoryMB = maxMemoryMB;
     }
 
     public void execute_plan()
     {
         // Read plan from JSON
-        auto plan = cast(JSONValue) parseJSON(readText(this.planPath));
+        auto plan = parseJSON(readText(this.planPath));
         size_t num_chunks = plan.array.length;
-        size_t[] chunk_sizes = plan.array.map!(c => c["chunk_size"].to!size_t).array;
-
+        size_t[] chunk_sizes = plan.array.map!(c => cast(size_t)c["chunk_size"].get!long).array;
         foreach (i; 0 .. num_chunks)
         {
             this.taskQueue.insertBack(i);
@@ -154,7 +96,7 @@ public class Scheduler
                 this.taskQueue.removeFront();
 
                 Pid worker_pid = this.runner.spawn_worker(this.planPath, next_chunk_id);
-                if (worker_pid == Pid.init)
+                if (worker_pid is Pid.init)
                 {
                     fileLogger.errorf("Failed to spawn worker for Chunk %d. Skipping", next_chunk_id);
                     continue;
@@ -165,11 +107,14 @@ public class Scheduler
                 worker_pcb.pid = worker_pid;
                 worker_pcb.chunk_id = next_chunk_id;
                 worker_pcb.json_path = this.planPath;
-                worker_pcb.start_time = SysTime.now();
+                worker_pcb.start_time = Clock.currTime();
                 worker_pcb.attempt = 0;
 
                 this.pcbMap[worker_pid] = worker_pcb;
                 this.memoryUsageMB += chunk_sizes[next_chunk_id]; // increase memory usage
+
+                fileLogger.infof("Spawned Worker PID %s for Chunk %d. Current Memory Usage: %d MB",
+                    worker_pid, next_chunk_id, this.memoryUsageMB);
             }
 
             // Phase 2 : Monitor Workers
@@ -178,7 +123,7 @@ public class Scheduler
             Pid[] retry_pids = [];
             foreach (pid, pcb; this.pcbMap)
             {
-                auto result = tryWaitProcess(pid);
+                auto result = tryWait(pid);
 
                 if (result.terminated)
                 {
@@ -240,7 +185,7 @@ public class Scheduler
 
                 // Spawn new process
                 Pid new_pid = this.runner.spawn_worker(this.planPath, cid);
-                if (new_pid == Pid.init)
+                if (new_pid is Pid.init)
                 {
                     this.memoryUsageMB -= chunk_sizes[cid];
                     continue;
@@ -260,7 +205,35 @@ public class Scheduler
     }
 }
 
-public ProcessController get_runner(TaskMode mode, string pythonPath)
+public class ProcessRunner
+{
+    private string pythonPath;
+    private string scriptPath;
+
+    this(string pyPath, string sPath)
+    {
+        this.pythonPath = pyPath;
+        this.scriptPath = sPath;
+    }
+
+    public Pid spawn_worker(string jsonPath, size_t chunk_id)
+    {
+        try
+        {
+            fileLogger.infof("Spawning process for Chunk %d", chunk_id);
+            return spawnProcess([
+                pythonPath, scriptPath, jsonPath, chunk_id.to!string
+            ]);
+        }
+        catch (Exception e)
+        {
+            fileLogger.errorf("System error spawning Chunk %d: %s", chunk_id, e.msg);
+            return Pid.init; // Return an invalid Pid
+        }
+    }
+}
+
+public ProcessRunner get_runner(TaskMode mode, string pythonPath)
 {
     string baseDir = thisExePath().dirName();
 
@@ -289,5 +262,5 @@ public ProcessController get_runner(TaskMode mode, string pythonPath)
 
     fileLogger.infof("Runner initialized. Engine script resolved to: %s", scriptPath);
 
-    return new ProcessController(pythonPath, scriptPath);
+    return new ProcessRunner(pythonPath, scriptPath);
 }
