@@ -12,7 +12,8 @@ import omspec_ipc;
 import planning;
 import process_control;
 
-void main(string[] args) {
+void main(string[] args)
+{
     // Default values
     string target = getcwd();
     int maxDepth = 3;
@@ -23,14 +24,15 @@ void main(string[] args) {
     // CLI Argument Parsing
     auto helpInformation = getopt(
         args,
-        "align",  	"Align multispectral bands (Default)", 	&alignMode,
-        "test",   	"Run alignment testbench", 				&testMode,
-        "tiling", 	"Perform image tiling for ML", 			&tilingMode,
-        "target|i", "Target directory (Default: PWD)", 		&target,
-        "depth",  	"Max tree depth to scan (Default: 3)", 	&maxDepth
+        "align", "Align multispectral bands (Default)", &alignMode,
+        "test", "Run alignment testbench", &testMode,
+        "tiling", "Perform image tiling for ML", &tilingMode,
+        "target|i", "Target directory (Default: PWD)", &target,
+        "depth", "Max tree depth to scan (Default: 3)", &maxDepth
     );
 
-    if (helpInformation.helpWanted) {
+    if (helpInformation.helpWanted)
+    {
         defaultGetoptPrinter("omspec - Open Multispectral Alignment Tool", helpInformation.options);
         return;
     }
@@ -39,8 +41,8 @@ void main(string[] args) {
     // TODO: after implementing actual python workers uncomment this
     // if (!testMode && !tilingMode) alignMode = true;
 
-    TaskMode mode = alignMode ? TaskMode.ALIGN : 
-        (testMode ? TaskMode.TEST : (tilingMode ? TaskMode.TILING : TaskMode.MOCK));
+    TaskMode mode = alignMode ? TaskMode.ALIGN : (testMode ? TaskMode.TEST
+            : (tilingMode ? TaskMode.TILING : TaskMode.MOCK));
 
     writeln("--- Open Multispectral Alignment Tool (omspec) ---");
     writeln("Mode:   ", mode);
@@ -48,7 +50,7 @@ void main(string[] args) {
     writeln("Depth:  ", maxDepth);
     writeln("--------------------------------------------------");
 
-	writeln("Generating Process Plan...");
+    writeln("Generating Process Plan...");
 
     DatasetChunk[] plan = generate_plan(target, maxDepth);
 
@@ -58,11 +60,12 @@ void main(string[] args) {
     save_plan_to_json(plan, planOutputPath);
 
     writeln("Ready to Spawn Workers.");
-	writeln("--------------------------------------------------");
+    writeln("--------------------------------------------------");
 
     writeln("Spawning Workers...");
 
-    string python_path = buildPath(thisExePath().dirName(), "..", "python_3_11_14", "install", "python.exe").absolutePath();
+    string python_path = buildPath(thisExePath().dirName(), "..", "python_3_11_14", "install", "python.exe")
+        .absolutePath();
     ProcessController controller = get_runner(mode, python_path);
 
     controller.execute_plan(planOutputPath);
