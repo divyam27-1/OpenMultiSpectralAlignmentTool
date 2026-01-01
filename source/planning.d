@@ -40,7 +40,7 @@ static this()
  */
 public DatasetChunk[] generate_plan(string root_path, int maxDepth)
 {
-    cfg = loadConfig(buildPath(thisExePath().dirName, "omspec.cfg"));
+    cfg = loadConfig(buildPath(thisExePath().dirName, "omspec.cfg").absolutePath());
     MAX_FILES_PER_CHUNK = cfg.max_files_per_chunk;
     ALLOWED_EXTENSIONS = cfg.allowed_extensions;
     MIN_BANDS_NEEDED = cfg.min_bands_needed;

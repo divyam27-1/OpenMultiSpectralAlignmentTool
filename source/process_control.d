@@ -18,6 +18,8 @@ import std.datetime.systime : SysTime, Clock;
 import std.logger;
 import std.exception : enforce;
 
+import config;
+
 SysTime current_time;
 string log_filename;
 FileLogger fileLogger;
@@ -62,9 +64,10 @@ public class Scheduler
 
     private DList!size_t taskQueue;
     private ProcessControlBlock[Pid] pcbMap;
-    private size_t memoryUsageMB = 0;
-    private size_t maxMemoryMB;
 
+    // initialized to default values just in case something goes wrong with reading cfg
+    private size_t memoryUsageMB = 0;
+    private size_t maxMemoryMB = 2048;
     private int maxRetries = 3;
     private int tickIntervalMS = 75;
 
@@ -73,6 +76,11 @@ public class Scheduler
         this.runner = runner;
         this.planPath = planPath;
         this.maxMemoryMB = maxMemoryMB;
+
+        auto cfg = loadConfig(buildPath(thisExePath().dirName, "omspec.cfg").absolutePath());
+        this.maxRetries = cfg.max_retries;
+        this.tickIntervalMS = cfg.tick_interval_ms;
+        this.maxMemoryMB = cfg.max_memory_mb;
     }
 
     public void execute_plan()
