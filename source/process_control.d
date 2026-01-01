@@ -66,7 +66,7 @@ public class Scheduler
     private size_t maxMemoryMB;
 
     private int maxRetries = 3;
-    private int tickIntervalMS = 500;
+    private int tickIntervalMS = 75;
 
     this(ProcessRunner runner, string planPath, size_t maxMemoryMB = 2048)
     {
@@ -80,7 +80,7 @@ public class Scheduler
         // Read plan from JSON
         auto plan = parseJSON(readText(this.planPath));
         size_t num_chunks = plan.array.length;
-        size_t[] chunk_sizes = plan.array.map!(c => cast(size_t)c["chunk_size"].get!long).array;
+        size_t[] chunk_sizes = plan.array.map!(c => cast(size_t) c["chunk_size"].get!long).array;
         foreach (i; 0 .. num_chunks)
         {
             this.taskQueue.insertBack(i);
@@ -114,7 +114,7 @@ public class Scheduler
                 this.memoryUsageMB += chunk_sizes[next_chunk_id]; // increase memory usage
 
                 fileLogger.infof("Spawned Worker PID %s for Chunk %d. Current Memory Usage: %d MB",
-                    worker_pid, next_chunk_id, this.memoryUsageMB);
+                    worker_pid.processID, next_chunk_id, this.memoryUsageMB);
             }
 
             // Phase 2 : Monitor Workers
@@ -140,7 +140,7 @@ public class Scheduler
                         break;
                     default:
                         fileLogger.errorf("Worker PID %s for Chunk %d exited with unknown code %d",
-                            pid, pcb.chunk_id, result.status);
+                            pid.processID, pcb.chunk_id, result.status);
                         failed_pids ~= pid;
                         break;
                     }
@@ -151,7 +151,7 @@ public class Scheduler
             foreach (pid; completed_pids)
             {
                 fileLogger.infof("Worker PID %s for Chunk %d completed successfully.",
-                    pid, this.pcbMap[pid].chunk_id);
+                    pid.processID, this.pcbMap[pid].chunk_id);
 
                 this.memoryUsageMB -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
                 this.pcbMap.remove(pid);
@@ -160,7 +160,7 @@ public class Scheduler
             foreach (pid; failed_pids)
             {
                 fileLogger.errorf("Worker PID %s for Chunk %d failed.",
-                    pid, this.pcbMap[pid].chunk_id);
+                    pid.processID, this.pcbMap[pid].chunk_id);
 
                 this.memoryUsageMB -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
                 this.pcbMap.remove(pid);
@@ -197,6 +197,8 @@ public class Scheduler
                 old_pcb.start_time = Clock.currTime();
 
                 this.pcbMap[new_pid] = old_pcb;
+                fileLogger.warningf("Retrying Chunk %d (Attempt %d). Spawned new Worker PID %s.",
+                    cid, next_attempt, new_pid.processID);
             }
 
             // Phase 4: Tick Wait
@@ -210,10 +212,33 @@ public class ProcessRunner
     private string pythonPath;
     private string scriptPath;
 
-    this(string pyPath, string sPath)
+    this(TaskMode mode, string pythonPath)
     {
-        this.pythonPath = pyPath;
-        this.scriptPath = sPath;
+        this.pythonPath = pythonPath;
+        fileLogger.infof("Python interpreter set to: %s", pythonPath);
+
+        string scriptName;
+        final switch (mode) // 'final switch' ensures you handle every TaskMode enum
+        {
+            case TaskMode.ALIGN:
+                scriptName = "align_worker.py";
+                break;
+            case TaskMode.TEST:
+                scriptName = "test_worker.py";
+                break;
+            case TaskMode.TILING:
+                scriptName = "tiling_worker.py";
+                break;
+            case TaskMode.MOCK:
+                scriptName = "mock_worker.py";
+                break;
+        }
+
+        this.scriptPath = buildPath(thisExePath().dirName(), "..", "engine", scriptName).absolutePath();
+        enforce(this.scriptPath.exists,
+            "CRITICAL: Engine script missing at " ~ this.scriptPath);
+
+        fileLogger.infof("ProcessRunner initialized for %s mode.", mode);
     }
 
     public Pid spawn_worker(string jsonPath, size_t chunk_id)
@@ -231,36 +256,4 @@ public class ProcessRunner
             return Pid.init; // Return an invalid Pid
         }
     }
-}
-
-public ProcessRunner get_runner(TaskMode mode, string pythonPath)
-{
-    string baseDir = thisExePath().dirName();
-
-    string scriptName;
-    switch (mode)
-    {
-    case TaskMode.ALIGN:
-        scriptName = "align_worker.py";
-        break;
-    case TaskMode.TEST:
-        scriptName = "test_worker.py";
-        break;
-    case TaskMode.TILING:
-        scriptName = "tiling_worker.py";
-        break;
-    case TaskMode.MOCK:
-    default:
-        scriptName = "mock_worker.py";
-        break;
-    }
-
-    string scriptPath = buildPath(baseDir, "..", "engine", scriptName).absolutePath();
-
-    enforce(scriptPath.exists,
-        "CRITICAL ERROR: Python worker script not found at: " ~ scriptPath);
-
-    fileLogger.infof("Runner initialized. Engine script resolved to: %s", scriptPath);
-
-    return new ProcessRunner(pythonPath, scriptPath);
 }

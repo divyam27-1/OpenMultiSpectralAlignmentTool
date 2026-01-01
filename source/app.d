@@ -11,9 +11,14 @@ import std.json;
 import omspec_ipc;
 import planning;
 import process_control;
+import config;
 
 void main(string[] args)
 {
+    // Load the config
+    auto configPath = buildPath(thisExePath().dirName, "omspec.cfg");
+    Config cfg = loadConfig(configPath);
+
     // Default values
     string target = getcwd();
     int maxDepth = 3;
@@ -34,6 +39,9 @@ void main(string[] args)
     if (helpInformation.helpWanted)
     {
         defaultGetoptPrinter("omspec - Open Multispectral Alignment Tool", helpInformation.options);
+        writeln();
+        writeln("Configuration Path: ", configPath);
+        writeln(cfg.toString());
         return;
     }
 
@@ -67,8 +75,8 @@ void main(string[] args)
     string python_path = buildPath(thisExePath().dirName(), "..", "python_3_11_14", "install", "python.exe")
         .absolutePath();
 
-    ProcessRunner runner = get_runner(mode, python_path);
-    Scheduler controller = new Scheduler(runner, planOutputPath);
+    ProcessRunner runner = new ProcessRunner(mode, python_path);
+    Scheduler controller = new Scheduler(runner, planOutputPath, 150);
 
     controller.execute_plan();
 
