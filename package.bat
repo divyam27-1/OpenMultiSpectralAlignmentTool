@@ -1,5 +1,5 @@
 @echo off
-set VERSION=1.0.0
+set VERSION=1.1.0
 set DIST_NAME=OMSPEC_v%VERSION%
 set DIST_DIR=dist\%DIST_NAME%
 
