@@ -9,9 +9,10 @@ import std.conv : to;
 import std.json;
 
 import appstate;
-import omspec_ipc;
 import planning;
+import planning_h;
 import process_control;
+import process_control_h;
 import config;
 
 void main(string[] args)
@@ -19,6 +20,10 @@ void main(string[] args)
     // Load the config
     auto configPath = buildPath(thisExePath().dirName, "omspec.cfg");
     Config cfg = loadConfig(configPath);
+
+    // Route Ctrl-C to handleInterrupt
+    import core.stdc.signal;
+    signal(SIGINT, &handleInterrupt);
 
     // Default values
     string target = getcwd();
@@ -71,7 +76,7 @@ void main(string[] args)
     writeln("Ready to Spawn Workers.");
     writeln("--------------------------------------------------");
 
-    writeln("Spawning Workers...");
+    writeln("Spawning Workers...\n");
 
     string python_path = buildPath(thisExePath().dirName(), "..", "python_3_11_14", "install", "python.exe")
         .absolutePath();
@@ -79,8 +84,10 @@ void main(string[] args)
     ProcessRunner runner = new ProcessRunner(mode, python_path);
     Scheduler controller = new Scheduler(runner, planOutputPath, 150);
 
-    controller.execute_plan();
+    bool ret = controller.execute_plan();
 
-    writeln("\nAll tasks completed.");
+    writeln("--------------------------------------------------");
+    if (ret) writeln("All Tasks Finished Successfully");
+    else controller.print_summary();
     writeln("--------------------------------------------------");
 }

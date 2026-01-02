@@ -12,8 +12,8 @@ import std.datetime.systime : SysTime, Clock;
 import std.conv : to;
 import std.json;
 
+import planning_h;
 import appstate;
-import omspec_ipc;
 import config;
 
 private int MAX_FILES_PER_CHUNK;
@@ -25,6 +25,7 @@ private string[] BANDS_ALLOWED;
 private Config cfg;
 
 SysTime current_time;
+string current_time_clean_string;
 string log_filename;
 FileLogger fileLogger;
 
@@ -34,7 +35,9 @@ static this()
     if (!exists("log"))
         mkdir("log");
     current_time = Clock.currTime();
-    log_filename = buildPath(targetPath, "log", "planning_" ~ current_time.toISOExtString().replace(":", "-") ~ ".log");
+    current_time_clean_string = current_time.toISOExtString().replace(":", "-");
+    log_filename = buildPath(targetPath,
+        "log", "planning_" ~ current_time_clean_string ~ ".log");
     fileLogger = new FileLogger(log_filename, LogLevel.info, CreateFolder.yes);
 }
 
@@ -126,6 +129,8 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
         j_chunk["chunk_id"] = i;
         j_chunk["image_count"] = chunk.images.length;
         j_chunk["chunk_size"] = chunk.chunk_size;
+        j_chunk["logfile"] = buildPath(getcwd(), "log",
+            format("worker_%u_%s.log", i, current_time_clean_string));
 
         JSONValue[] j_images;
         foreach (img; chunk.images)

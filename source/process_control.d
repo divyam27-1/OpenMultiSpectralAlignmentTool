@@ -2,7 +2,8 @@ module process_control;
 
 import core.thread;
 import core.time;
-import core.atomic : atomicOp;
+import core.atomic;
+import core.stdc.signal;
 
 import std.stdio;
 import std.process;
@@ -18,12 +19,16 @@ import std.datetime.systime : SysTime, Clock;
 import std.logger;
 import std.exception : enforce;
 
+import process_control_h;
 import appstate;
 import config;
+import tui_h : ProgressBar;
 
 SysTime current_time;
 string log_filename;
 FileLogger fileLogger;
+
+shared bool shutdownRequested = false;
 
 // TODO: Make file logger not generate at module load time instead generate using an initLogger() method called from main only after targetPath is set
 static this()
@@ -34,30 +39,6 @@ static this()
     log_filename = buildPath(targetPath, "log",
         "processing_" ~ current_time.toISOExtString().replace(":", "-") ~ ".log");
     fileLogger = new FileLogger(log_filename, LogLevel.info, CreateFolder.yes);
-}
-
-enum TaskMode
-{
-    MOCK,
-    ALIGN,
-    TEST,
-    TILING
-}
-
-struct ProcessResult
-{
-    size_t chunk_id;
-    bool success;
-    int exitCode;
-}
-
-struct ProcessControlBlock
-{
-    Pid pid;
-    size_t chunk_id;
-    string json_path;
-    SysTime start_time;
-    int attempt;
 }
 
 public class Scheduler
@@ -74,6 +55,10 @@ public class Scheduler
     private int maxRetries = 3;
     private int tickIntervalMS = 75;
 
+    // generats TUI and progress bar
+    private ProgressBar progBar;
+    private int completed = 0, failed = 0;
+
     this(ProcessRunner runner, string planPath, size_t maxMemoryMB = 2048)
     {
         this.runner = runner;
@@ -86,19 +71,36 @@ public class Scheduler
         this.maxMemoryMB = cfg.max_memory_mb;
     }
 
-    public void execute_plan()
+    public bool execute_plan()
     {
         // Read plan from JSON
         auto plan = parseJSON(readText(this.planPath));
         size_t num_chunks = plan.array.length;
+        if (num_chunks <= 0)
+        {
+            fileLogger.errorf("Plan is empty");
+            return false;
+        }
+
         size_t[] chunk_sizes = plan.array.map!(c => cast(size_t) c["chunk_size"].get!long).array;
+
         foreach (i; 0 .. num_chunks)
         {
             this.taskQueue.insertBack(i);
         }
 
+        // Spawn progress bar
+        progBar = ProgressBar(cast(int) num_chunks);
+
         while (!this.taskQueue.empty || this.pcbMap.length > 0)
         {
+            if (atomicLoad(shutdownRequested))
+            {
+                writeln(
+                    "Shutdown requested by user. Stopping scheduler and Terminating all workers...");
+                fileLogger.warning("Shutdown requested by user. Stopping scheduler...");
+                break; // Exit the loop to trigger the scope(exit) cleanup
+            }
 
             // Phase 1 : Worker Spawning
             while (!this.taskQueue.empty && this.memoryUsageMB < this.maxMemoryMB)
@@ -166,6 +168,8 @@ public class Scheduler
 
                 this.memoryUsageMB -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
                 this.pcbMap.remove(pid);
+
+                completed++;
             }
 
             foreach (pid; failed_pids)
@@ -175,6 +179,8 @@ public class Scheduler
 
                 this.memoryUsageMB -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
                 this.pcbMap.remove(pid);
+
+                failed++;
             }
 
             foreach (pid; retry_pids)
@@ -191,6 +197,8 @@ public class Scheduler
                 {
                     fileLogger.errorf("Chunk %d failed after max retries. Reclaiming memory.", cid);
                     this.memoryUsageMB -= chunk_sizes[cid];
+
+                    failed++;
                     continue;
                 }
 
@@ -213,7 +221,46 @@ public class Scheduler
             }
 
             // Phase 4: Tick Wait
+            progBar.update(completed, failed);
             Thread.sleep(dur!"msecs"(tickIntervalMS));
+        }
+
+        progBar.finish();
+        return failed == 0 ? true : false;
+
+        // On exit, terminate all workers
+        scope (exit)
+        {
+            if (pcbMap.length > 0)
+            {
+                fileLogger.info("Emergency cleanup: Terminating all active workers...");
+                foreach (pid, pcb; pcbMap)
+                {
+                    try
+                    {
+                        kill(pid);
+                    }
+                    catch (Exception e)
+                    {
+                        fileLogger.errorf("Error terminating Worker PID %s: %s", pid.processID, e
+                                .msg);
+                    }
+                }
+            }
+
+            progBar.finish();
+        }
+    }
+
+    public void print_summary()
+    {
+        writefln("Final Status: %d Success, %d Failed %d Total",
+            this.completed, this.failed, this.completed + this.failed);
+
+        if (this.failed > 0)
+        {
+            writeln(
+                "Check logs/process_ and logs/worker_ for specific error details on failed chunks.");
         }
     }
 }
@@ -267,4 +314,11 @@ public class ProcessRunner
             return Pid.init; // Return an invalid Pid
         }
     }
+}
+
+extern (C) void handleInterrupt(int sig) nothrow @nogc @system
+{
+    import core.atomic : atomicStore;
+
+    atomicStore(shutdownRequested, true);
 }
