@@ -13,7 +13,7 @@ dub build -b release --compiler=dmd
 echo [3/4] Creating Folder Structure...
 mkdir %DIST_DIR%
 mkdir %DIST_DIR%\engine
-mkdir %DIST_DIR%\bin 
+mkdir %DIST_DIR%\bin
 mkdir %DIST_DIR%\python_3_11_14
 
 echo [4/4] Copying Runtime Dependencies...

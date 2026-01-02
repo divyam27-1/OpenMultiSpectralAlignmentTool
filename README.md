@@ -62,6 +62,12 @@ Users can tune OMSPEC to their hardware and workflow:
 **v1.2.0+**
 
 - Production-grade alignment, tiling, and testing services.
+- Support for Linux
+
+**v2.0**
+
+- Cloud integration
+- Extensibility with Custom Image Processing Pipelines
 
 ---
 
