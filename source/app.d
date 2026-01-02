@@ -59,6 +59,7 @@ void main(string[] args)
     writeln("Mode:   ", mode);
     writeln("Target: ", target);
     writeln("Depth:  ", maxDepth);
+    writeln("License:  Community Edition (Non-Commercial User Only)");
     writeln("--------------------------------------------------");
 
     setTargetPath(absolutePath(target));
