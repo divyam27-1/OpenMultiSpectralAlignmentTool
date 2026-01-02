@@ -4,7 +4,7 @@ set DIST_NAME=OMSPEC_v%VERSION%
 set DIST_DIR=dist\%DIST_NAME%
 
 echo [1/4] Cleaning old distribution...
-if exist dist rd /s /q dist
+if exist %DIST_DIR% rd /s /q dist
 timeout /t 2 /nobreak > nul
 
 echo [2/4] Building Release Binary...
