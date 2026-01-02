@@ -1,10 +1,10 @@
 @echo off
-set VERSION=1.1.0
+set VERSION=1.1.1
 set DIST_NAME=OMSPEC_v%VERSION%
 set DIST_DIR=dist\%DIST_NAME%
 
 echo [1/4] Cleaning old distribution...
-if exist %DIST_DIR% rd /s /q dist
+if exist %DIST_DIR% rd /s /q %DIST_DIR%
 timeout /t 2 /nobreak > nul
 
 echo [2/4] Building Release Binary...
