@@ -15,7 +15,7 @@ struct UsageStats
     ulong bytesProcessed;
 }
 
-class UsageTracker
+class UsageLimitTracker
 {
     private string cfgDataPath;
     private const ulong limit = 1024UL * 1024 * 1024 * 1024; // 1 TB
@@ -49,7 +49,7 @@ class UsageTracker
         else
         {
             // Dev Build: Always bypass and return true
-            writeln("DEBUG: UsageTracker bypass enabled (Dev Build).");
+            writeln("DEBUG: UsageLimitTracker bypass enabled (Dev Build).");
             return true;
         }
 

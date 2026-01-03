@@ -7,5 +7,6 @@
 	"license": "proprietary",
 	"name": "openmultispectralalignmenttool",
 	"targetPath": "bin",
-	"targetName": "omspec"
+	"targetName": "omspec",
+	"libs-windows": ["psapi", "user32"]
 }

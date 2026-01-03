@@ -80,8 +80,8 @@ void main(string[] args)
     writeln("\nTotal Chunks to process: ", plan.length);
 
     size_t plan_size = reduce!((a, s) => a + s.chunk_size)(0UL, plan);
-    UsageTracker usageTracker = new UsageTracker();
-    if (!usageTracker.incrementAndCheck(plan_size))
+    UsageLimitTracker UsageLimitTracker = new UsageLimitTracker();
+    if (!UsageLimitTracker.incrementAndCheck(plan_size))
         return;
 
     string planOutputPath = buildPath(target, "plan.json").absolutePath();
