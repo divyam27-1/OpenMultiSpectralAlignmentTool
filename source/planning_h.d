@@ -10,7 +10,7 @@ public struct Dataset
 
 public struct MultiSpectralImageGroup
 {
-	long file_size;
+	size_t file_size;
 	string[] bands;
 	string[string] fname;
 }

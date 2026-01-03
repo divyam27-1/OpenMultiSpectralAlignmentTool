@@ -7,6 +7,7 @@ import std.file;
 import std.path;
 import std.conv : to;
 import std.json;
+import std.algorithm.iteration;
 
 import appstate;
 import planning;
@@ -14,6 +15,7 @@ import planning_h;
 import process_control;
 import process_control_h;
 import config;
+import usage_tracker;
 
 void main(string[] args)
 {
@@ -53,9 +55,15 @@ void main(string[] args)
 
     TaskMode mode = alignMode ? TaskMode.ALIGN : (testMode ? TaskMode.TEST
             : (tilingMode ? TaskMode.TILING : TaskMode.MOCK));
-    
 
     writeln("--- Open Multispectral Alignment Tool (omspec) ---");
+    version (release)
+    {
+    }
+    else
+    {
+        writeln("Debug Build at ", thisExePath());
+    }
     writeln("Mode:   ", mode);
     writeln("Target: ", target);
     writeln("Depth:  ", maxDepth);
@@ -70,6 +78,11 @@ void main(string[] args)
     DatasetChunk[] plan = generate_plan(target, maxDepth);
 
     writeln("\nTotal Chunks to process: ", plan.length);
+
+    size_t plan_size = reduce!((a, s) => a + s.chunk_size)(0UL, plan);
+    UsageTracker usageTracker = new UsageTracker();
+    if (!usageTracker.incrementAndCheck(plan_size))
+        return;
 
     string planOutputPath = buildPath(target, "plan.json").absolutePath();
     save_plan_to_json(plan, planOutputPath);
@@ -88,7 +101,9 @@ void main(string[] args)
     bool ret = controller.execute_plan();
 
     writeln("--------------------------------------------------");
-    if (ret) writeln("All Tasks Finished Successfully");
-    else controller.print_summary();
+    if (ret)
+        writeln("All Tasks Finished Successfully");
+    else
+        controller.print_summary();
     writeln("--------------------------------------------------");
 }

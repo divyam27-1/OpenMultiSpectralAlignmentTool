@@ -109,7 +109,7 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth)
 
             found_multispectral_images[img_base].bands ~= img_band;
             found_multispectral_images[img_base].fname[img_band] = entry.name;
-            found_multispectral_images[img_base].file_size += getSize(entry.name);
+            found_multispectral_images[img_base].file_size += getSize(entry.name);     // TODO remove this after testing
         }
     }
 

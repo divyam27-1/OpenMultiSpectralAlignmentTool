@@ -103,7 +103,7 @@ public class Scheduler
             }
 
             // Phase 1 : Worker Spawning
-            while (!this.taskQueue.empty && this.memoryUsageMB < this.maxMemoryMB)
+            while (!this.taskQueue.empty && this.memoryUsageMB < this.maxMemoryMB)      // TODO: make this somehow relate to the actual memory on RAM
             {
                 size_t next_chunk_id = this.taskQueue.front;
                 this.taskQueue.removeFront();
