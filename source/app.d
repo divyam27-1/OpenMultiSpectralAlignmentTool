@@ -8,6 +8,9 @@ import std.path;
 import std.conv : to;
 import std.json;
 import std.algorithm.iteration;
+import std.datetime.systime : SysTime, Clock;
+import std.string;
+import std.logger;
 
 import appstate;
 import planning;
@@ -16,15 +19,19 @@ import process_control;
 import process_control_h;
 import config;
 import usage_tracker;
+import loggers;
 
 void main(string[] args)
 {
     // Load the config
     auto configPath = buildPath(thisExePath().dirName, "omspec.cfg");
     Config cfg = loadConfig(configPath);
+    SysTime currentTime = Clock.currTime();
+    string currentTimeString = currentTime.toISOExtString().replace(":", "-");
 
     // Route Ctrl-C to handleInterrupt
     import core.stdc.signal;
+
     signal(SIGINT, &handleInterrupt);
 
     // Default values
@@ -73,6 +80,18 @@ void main(string[] args)
     setTargetPath(absolutePath(target));
     writeln("Target Path set to: ", targetPath);
 
+    string logDir = buildPath(target, "log");
+    if (!exists(logDir))
+        mkdir(logDir);
+
+    mainLogger = new FileLogger(buildPath(logDir, "main_" ~ currentTimeString ~ ".log"),
+        LogLevel.info, CreateFolder.yes);
+    planLogger = new FileLogger(buildPath(logDir, "plan_" ~ currentTimeString ~ ".log"),
+        LogLevel.info, CreateFolder.yes);
+    processLogger = new FileLogger(buildPath(logDir, "process_" ~ currentTimeString ~ ".log"),
+        LogLevel.info, CreateFolder.yes);
+    workerLogPath = buildPath(logDir, "worker_%u_" ~ currentTimeString ~ ".log");
+
     writeln("Generating Process Plan...");
 
     DatasetChunk[] plan = generate_plan(target, maxDepth);
@@ -86,6 +105,7 @@ void main(string[] args)
 
     string planOutputPath = buildPath(target, "plan.json").absolutePath();
     save_plan_to_json(plan, planOutputPath);
+    mainLogger.infof("Generated Process Plan at %s", planOutputPath);
 
     writeln("Ready to Spawn Workers.");
     writeln("--------------------------------------------------");
@@ -94,6 +114,7 @@ void main(string[] args)
 
     string python_path = buildPath(thisExePath().dirName(), "..", "python_3_11_14", "install", "python.exe")
         .absolutePath();
+    mainLogger.infof("Internal Python Runtime Path: %s", python_path);
 
     ProcessRunner runner = new ProcessRunner(mode, python_path);
     Scheduler controller = new Scheduler(runner, planOutputPath, 150);
@@ -106,4 +127,5 @@ void main(string[] args)
     else
         controller.print_summary();
     writeln("--------------------------------------------------");
+    mainLogger.info("Finished");
 }

@@ -8,13 +8,14 @@ import std.range;
 import std.array;
 import std.string;
 import std.logger;
-import std.datetime.systime : SysTime, Clock;
+import std.datetime.systime : Clock;
 import std.conv : to;
 import std.json;
 
 import planning_h;
 import appstate;
 import config;
+import loggers : planLogger, workerLogPath;
 
 private int MAX_FILES_PER_CHUNK;
 private string[] ALLOWED_EXTENSIONS;
@@ -23,23 +24,6 @@ private string[] BANDS_ALLOWED;
 
 // Config setup
 private Config cfg;
-
-SysTime current_time;
-string current_time_clean_string;
-string log_filename;
-FileLogger fileLogger;
-
-// TODO: Make file logger not generate at module load time instead generate using an initLogger() method called from main only after targetPath is set
-static this()
-{
-    if (!exists("log"))
-        mkdir("log");
-    current_time = Clock.currTime();
-    current_time_clean_string = current_time.toISOExtString().replace(":", "-");
-    log_filename = buildPath(targetPath,
-        "log", "planning_" ~ current_time_clean_string ~ ".log");
-    fileLogger = new FileLogger(log_filename, LogLevel.info, CreateFolder.yes);
-}
 
 /** * Scans the target and builds the Chunk array.
  */
@@ -63,7 +47,7 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth)
     {
         auto entries = dirEntries(ds.path, SpanMode.shallow);
 
-        fileLogger.infof("Scanning directory: %s", ds.path);
+        planLogger.infof("Scanning directory: %s", ds.path);
         foreach (entry; entries)
         {
             if (!entry.isFile)
@@ -75,7 +59,7 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth)
 
             if (!ALLOWED_EXTENSIONS.canFind(extn.toUpper()))
             {
-                fileLogger.warningf("extension %s not allowed", extn);
+                planLogger.warningf("extension %s not allowed", extn);
                 continue;
             }
 
@@ -84,7 +68,7 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth)
             // Check if underscore exists AND isn't at the very start/end
             if (img_base_idx <= 0 || img_base_idx >= (to!int(base.length) - 1))
             {
-                fileLogger.warningf("File %s skipped: naming convention mismatch", base);
+                planLogger.warningf("File %s skipped: naming convention mismatch", base);
                 continue;
             }
 
@@ -93,7 +77,7 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth)
 
             if (!BANDS_ALLOWED.canFind(img_band))
             {
-                fileLogger.warningf("Band %s in file %s not recognized", img_band, base);
+                planLogger.warningf("Band %s in file %s not recognized", img_band, base);
                 continue;
             }
 
@@ -129,8 +113,7 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
         j_chunk["chunk_id"] = i;
         j_chunk["image_count"] = chunk.images.length;
         j_chunk["chunk_size"] = chunk.chunk_size;
-        j_chunk["logfile"] = buildPath(getcwd(), "log",
-            format("worker_%u_%s.log", i, current_time_clean_string));
+        j_chunk["logfile"] = workerLogPath.format(i);
 
         JSONValue[] j_images;
         foreach (img; chunk.images)
@@ -157,7 +140,7 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
     // Write to file with pretty printing for debugging
     std.file.write(output_path, final_root.toPrettyString());
 
-    fileLogger.info("Plan successfully serialized to: " ~ output_path);
+    planLogger.info("Plan successfully serialized to: " ~ output_path);
 }
 
 // Recursive discovery of folders containing files
@@ -179,7 +162,7 @@ private void scan_directory_recursive(string currentPath, int currentDepth, int 
     if (validCount > 0)
     {
         datasets ~= Dataset(currentPath, validCount);
-        fileLogger.infof("Valid dataset found: %s (%d candidate files)", currentPath, validCount);
+        planLogger.infof("Valid dataset found: %s (%d candidate files)", currentPath, validCount);
     }
 
     auto subDirs = dirEntries(currentPath, SpanMode.shallow).filter!(e => e.isDir);
@@ -203,7 +186,7 @@ private DatasetChunk[] get_chunks(MultiSpectralImageGroup[string] images, int MA
         // Reject image groups with less than required bands
         if (img_group.bands.length < MIN_BANDS_NEEDED)
         {
-            fileLogger.warningf("Image group %s skipped: only %d bands found", img_base, img_group
+            planLogger.warningf("Image group %s skipped: only %d bands found", img_base, img_group
                     .bands.length);
             continue;
         }

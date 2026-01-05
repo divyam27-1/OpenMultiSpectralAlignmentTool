@@ -20,26 +20,13 @@ import std.logger;
 import std.exception : enforce;
 
 import process_control_h;
+import process_monitor;
 import appstate;
 import config;
 import tui_h : ProgressBar;
-
-SysTime current_time;
-string log_filename;
-FileLogger fileLogger;
+import loggers : processLogger;
 
 shared bool shutdownRequested = false;
-
-// TODO: Make file logger not generate at module load time instead generate using an initLogger() method called from main only after targetPath is set
-static this()
-{
-    if (!exists("log"))
-        mkdir("log");
-    current_time = Clock.currTime();
-    log_filename = buildPath(targetPath, "log",
-        "processing_" ~ current_time.toISOExtString().replace(":", "-") ~ ".log");
-    fileLogger = new FileLogger(log_filename, LogLevel.info, CreateFolder.yes);
-}
 
 public class Scheduler
 {
@@ -78,7 +65,7 @@ public class Scheduler
         size_t num_chunks = plan.array.length;
         if (num_chunks <= 0)
         {
-            fileLogger.errorf("Plan is empty");
+            processLogger.errorf("Plan is empty");
             return false;
         }
 
@@ -98,7 +85,7 @@ public class Scheduler
             {
                 writeln(
                     "Shutdown requested by user. Stopping scheduler and Terminating all workers...");
-                fileLogger.warning("Shutdown requested by user. Stopping scheduler...");
+                processLogger.warning("Shutdown requested by user. Stopping scheduler...");
                 break; // Exit the loop to trigger the scope(exit) cleanup
             }
 
@@ -111,7 +98,7 @@ public class Scheduler
                 Pid worker_pid = this.runner.spawn_worker(this.planPath, next_chunk_id);
                 if (worker_pid is Pid.init)
                 {
-                    fileLogger.errorf("Failed to spawn worker for Chunk %d. Skipping", next_chunk_id);
+                    processLogger.errorf("Failed to spawn worker for Chunk %d. Skipping", next_chunk_id);
                     continue;
                 }
 
@@ -126,7 +113,7 @@ public class Scheduler
                 this.pcbMap[worker_pid] = worker_pcb;
                 this.memoryUsageMB += chunk_sizes[next_chunk_id]; // increase memory usage
 
-                fileLogger.infof("Spawned Worker PID %s for Chunk %d. Current Memory Usage: %d MB",
+                processLogger.infof("Spawned Worker PID %s for Chunk %d. Current Memory Usage: %d MB",
                     worker_pid.processID, next_chunk_id, this.memoryUsageMB);
             }
 
@@ -152,7 +139,7 @@ public class Scheduler
                         retry_pids ~= pid;
                         break;
                     default:
-                        fileLogger.errorf("Worker PID %s for Chunk %d exited with unknown code %d",
+                        processLogger.errorf("Worker PID %s for Chunk %d exited with unknown code %d",
                             pid.processID, pcb.chunk_id, result.status);
                         failed_pids ~= pid;
                         break;
@@ -163,7 +150,7 @@ public class Scheduler
             // Phase 3: Cleanup and Retry
             foreach (pid; completed_pids)
             {
-                fileLogger.infof("Worker PID %s for Chunk %d completed successfully.",
+                processLogger.infof("Worker PID %s for Chunk %d completed successfully.",
                     pid.processID, this.pcbMap[pid].chunk_id);
 
                 this.memoryUsageMB -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
@@ -174,7 +161,7 @@ public class Scheduler
 
             foreach (pid; failed_pids)
             {
-                fileLogger.errorf("Worker PID %s for Chunk %d failed.",
+                processLogger.errorf("Worker PID %s for Chunk %d failed.",
                     pid.processID, this.pcbMap[pid].chunk_id);
 
                 this.memoryUsageMB -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
@@ -195,7 +182,7 @@ public class Scheduler
 
                 if (next_attempt > maxRetries)
                 {
-                    fileLogger.errorf("Chunk %d failed after max retries. Reclaiming memory.", cid);
+                    processLogger.errorf("Chunk %d failed after max retries. Reclaiming memory.", cid);
                     this.memoryUsageMB -= chunk_sizes[cid];
 
                     failed++;
@@ -216,7 +203,7 @@ public class Scheduler
                 old_pcb.start_time = Clock.currTime();
 
                 this.pcbMap[new_pid] = old_pcb;
-                fileLogger.warningf("Retrying Chunk %d (Attempt %d). Spawned new Worker PID %s.",
+                processLogger.warningf("Retrying Chunk %d (Attempt %d). Spawned new Worker PID %s.",
                     cid, next_attempt, new_pid.processID);
             }
 
@@ -233,7 +220,7 @@ public class Scheduler
         {
             if (pcbMap.length > 0)
             {
-                fileLogger.info("Emergency cleanup: Terminating all active workers...");
+                processLogger.info("Emergency cleanup: Terminating all active workers...");
                 foreach (pid, pcb; pcbMap)
                 {
                     try
@@ -242,7 +229,7 @@ public class Scheduler
                     }
                     catch (Exception e)
                     {
-                        fileLogger.errorf("Error terminating Worker PID %s: %s", pid.processID, e
+                        processLogger.errorf("Error terminating Worker PID %s: %s", pid.processID, e
                                 .msg);
                     }
                 }
@@ -273,7 +260,7 @@ public class ProcessRunner
     this(TaskMode mode, string pythonPath)
     {
         this.pythonPath = pythonPath;
-        fileLogger.infof("Python interpreter set to: %s", pythonPath);
+        processLogger.infof("Python interpreter set to: %s", pythonPath);
 
         string scriptName;
         final switch (mode) // 'final switch' ensures you handle every TaskMode enum
@@ -296,21 +283,21 @@ public class ProcessRunner
         enforce(this.scriptPath.exists,
             "CRITICAL: Engine script missing at " ~ this.scriptPath);
 
-        fileLogger.infof("ProcessRunner initialized for %s mode.", mode);
+        processLogger.infof("ProcessRunner initialized for %s mode.", mode);
     }
 
     public Pid spawn_worker(string jsonPath, size_t chunk_id)
     {
         try
         {
-            fileLogger.infof("Spawning process for Chunk %d", chunk_id);
+            processLogger.infof("Spawning process for Chunk %d", chunk_id);
             return spawnProcess([
                 pythonPath, scriptPath, jsonPath, chunk_id.to!string
             ]);
         }
         catch (Exception e)
         {
-            fileLogger.errorf("System error spawning Chunk %d: %s", chunk_id, e.msg);
+            processLogger.errorf("System error spawning Chunk %d: %s", chunk_id, e.msg);
             return Pid.init; // Return an invalid Pid
         }
     }
