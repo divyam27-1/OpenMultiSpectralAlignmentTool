@@ -2,11 +2,31 @@
 	"authors": [
 		"Divyam Tiwari"
 	],
+	"configurations": [
+		{
+			"name": "application",
+			"targetType": "executable"
+		},
+		{
+			"name": "release_build",
+			"versions": [
+				"release"
+			],
+			"targetType": "executable"
+		},
+		{
+			"name": "dev_build",
+			"targetType": "executable"
+		}
+	],
 	"copyright": "Copyright © 2025, Divyam Tiwari",
 	"description": "Open Multispectral Alignment Tool",
-	"license": "proprietary",
+	"libs-windows": [
+		"psapi",
+		"user32"
+	],
+	"license": "PolyForm Noncommercial License 1.0.0",
 	"name": "openmultispectralalignmenttool",
 	"targetPath": "bin",
-	"targetName": "omspec",
-	"libs-windows": ["psapi", "user32"]
+	"targetName": "omspec"
 }

@@ -1,5 +1,5 @@
 @echo off
-set VERSION=1.1.2
+set VERSION=1.1.3
 set DIST_NAME=OMSPEC_v%VERSION%
 set DIST_DIR=dist\%DIST_NAME%
 
@@ -8,7 +8,7 @@ if exist %DIST_DIR% rd /s /q %DIST_DIR%
 timeout /t 2 /nobreak > nul
 
 echo [2/4] Building Release Binary...
-dub build -b release --compiler=dmd
+dub build -b release --config="release_build" --compiler=dmd
 
 echo [3/4] Creating Folder Structure...
 mkdir %DIST_DIR%
