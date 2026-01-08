@@ -17,3 +17,5 @@ openmultispectralalignmenttool-test-*
 *.obj
 *.lst
 python_3_11_14/
+
+.vscode

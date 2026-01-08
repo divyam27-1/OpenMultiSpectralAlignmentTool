@@ -1,0 +1,91 @@
+import cv2
+import numpy as np
+import logging
+import sys
+import os
+
+def load_chunk(image_entries: list[dict]) -> list[dict[str, np.ndarray]]:
+    """
+    Loads a chunk of image entries.
+
+    Returns:
+        List of images in the format:
+        {
+            "band1" : np.ndarray,
+            "band2" : np.ndarray,
+            ...
+        }
+
+    Exit semantics:
+        Propagates exit(1) and exit(2) from load_image_bands unchanged.
+    """
+    if not isinstance(image_entries, list):
+        logging.fatal("Image chunk is not a list.")
+        sys.exit(1)
+
+    loaded_chunk: list[dict[str, np.ndarray]] = []
+
+    logging.info(f"Loading image chunk with {len(image_entries)} entries")
+
+    for idx, image_entry in enumerate(image_entries):
+        if not isinstance(image_entry, dict):
+            logging.error(f"Invalid image entry at index {idx}: not a dict")
+            sys.exit(1)
+
+        bands = load_image_bands(image_entry)
+        loaded_chunk.append(bands)
+
+    logging.info(f"Successfully loaded {len(loaded_chunk)} images in chunk")
+    return loaded_chunk
+
+
+def load_image_bands(image_entry: dict) -> dict[str, np.ndarray]:
+    """
+    Loads all bands for a single image entry with strict validation.
+
+    Exit codes:
+      1 = permanent failure (bad plan / missing files)
+      2 = retryable IO failure (NAS visibility / transient read error)
+    """
+    base_name = image_entry.get("base_name")
+    if not base_name:
+        logging.fatal("Task chunk contains an image entry missing 'base_name'.")
+        sys.exit(1)
+
+    band_obj = image_entry.get("bands")
+    if not band_obj:
+        logging.error(f"Image {base_name} missing 'bands' definition.")
+        sys.exit(1)
+
+    loaded_bands = {}
+
+    for band_name, band_path in band_obj.items():
+        try:
+            # Permanent: file does not exist
+            if not os.path.exists(band_path):
+                raise FileNotFoundError(f"Missing band file: {band_path}")
+            if not os.path.isfile(band_path):
+                raise FileNotFoundError(f"Not a file: {band_path}")
+
+            img = cv2.imread(band_path, cv2.IMREAD_UNCHANGED)
+
+            # Retryable: NAS-mounted files may transiently fail even if file exists
+            if img is None:
+                raise BlockingIOError(f"Band unreadable (yet): {band_path}")
+
+            loaded_bands[band_name] = img
+
+        except FileNotFoundError as e:
+            logging.error(f"Band {band_name} missing for {base_name}: {e}")
+            sys.exit(1)
+
+        except BlockingIOError as e:
+            logging.warning(f"Retryable IO error loading band {band_name} for {base_name}: {e}")
+            sys.exit(2)
+
+        except Exception as e:
+            logging.error(f"Unexpected error loading band {band_name} for {base_name}")
+            sys.exit(1)
+
+    logging.info(f"Successfully loaded {len(loaded_bands)} bands for {base_name}")
+    return loaded_bands

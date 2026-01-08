@@ -37,25 +37,25 @@ public class Scheduler
     private ProcessControlBlock[Pid] pcbMap;
 
     // initialized to default values just in case something goes wrong with reading cfg
-    private size_t memoryUsageMB = 0;
-    private size_t maxMemoryMB = 2048;
+    private size_t memoryUsage = 0;
+    private size_t maxMemory = 2048;
     private int maxRetries = 3;
     private int tickIntervalMS = 75;
 
     // generats TUI and progress bar
     private ProgressBar progBar;
-    private int completed = 0, failed = 0;
+    private int completed = 0, running = 0, failed = 0;
 
     this(ProcessRunner runner, string planPath, size_t maxMemoryMB = 2048)
     {
         this.runner = runner;
         this.planPath = planPath;
-        this.maxMemoryMB = maxMemoryMB;
+        this.maxMemory = maxMemoryMB * 1024 * 1024;
 
         auto cfg = loadConfig(buildPath(thisExePath().dirName, "omspec.cfg").absolutePath());
         this.maxRetries = cfg.max_retries;
         this.tickIntervalMS = cfg.tick_interval_ms;
-        this.maxMemoryMB = cfg.max_memory_mb;
+        this.maxMemory = cfg.max_memory_mb * 1024 * 1024;
     }
 
     public bool execute_plan()
@@ -90,7 +90,7 @@ public class Scheduler
             }
 
             // Phase 1 : Worker Spawning
-            while (!this.taskQueue.empty && this.memoryUsageMB < this.maxMemoryMB)      // TODO: make this somehow relate to the actual memory on RAM
+            while (!this.taskQueue.empty && this.memoryUsage < this.maxMemory) // TODO: make this somehow relate to the actual memory on RAM
             {
                 size_t next_chunk_id = this.taskQueue.front;
                 this.taskQueue.removeFront();
@@ -111,10 +111,10 @@ public class Scheduler
                 worker_pcb.attempt = 0;
 
                 this.pcbMap[worker_pid] = worker_pcb;
-                this.memoryUsageMB += chunk_sizes[next_chunk_id]; // increase memory usage
+                this.memoryUsage += chunk_sizes[next_chunk_id]; // increase memory usage
 
                 processLogger.infof("Spawned Worker PID %s for Chunk %d. Current Memory Usage: %d MB",
-                    worker_pid.processID, next_chunk_id, this.memoryUsageMB);
+                    worker_pid.processID, next_chunk_id, this.memoryUsage);
             }
 
             // Phase 2 : Monitor Workers
@@ -153,7 +153,7 @@ public class Scheduler
                 processLogger.infof("Worker PID %s for Chunk %d completed successfully.",
                     pid.processID, this.pcbMap[pid].chunk_id);
 
-                this.memoryUsageMB -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
+                this.memoryUsage -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
                 this.pcbMap.remove(pid);
 
                 completed++;
@@ -164,7 +164,7 @@ public class Scheduler
                 processLogger.errorf("Worker PID %s for Chunk %d failed.",
                     pid.processID, this.pcbMap[pid].chunk_id);
 
-                this.memoryUsageMB -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
+                this.memoryUsage -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
                 this.pcbMap.remove(pid);
 
                 failed++;
@@ -183,7 +183,7 @@ public class Scheduler
                 if (next_attempt > maxRetries)
                 {
                     processLogger.errorf("Chunk %d failed after max retries. Reclaiming memory.", cid);
-                    this.memoryUsageMB -= chunk_sizes[cid];
+                    this.memoryUsage -= chunk_sizes[cid];
 
                     failed++;
                     continue;
@@ -193,7 +193,7 @@ public class Scheduler
                 Pid new_pid = this.runner.spawn_worker(this.planPath, cid);
                 if (new_pid is Pid.init)
                 {
-                    this.memoryUsageMB -= chunk_sizes[cid];
+                    this.memoryUsage -= chunk_sizes[cid];
                     continue;
                 }
 
@@ -208,7 +208,7 @@ public class Scheduler
             }
 
             // Phase 4: Tick Wait
-            progBar.update(completed, failed);
+            progBar.update(completed, cast(int)this.pcbMap.length, failed);
             Thread.sleep(dur!"msecs"(tickIntervalMS));
         }
 
@@ -256,49 +256,56 @@ public class ProcessRunner
 {
     private string pythonPath;
     private string scriptPath;
+    private TaskMode mode;
+    private string workflow;
 
-    this(TaskMode mode, string pythonPath)
+    this(string pythonPath, string scriptName, TaskMode mode)
     {
         this.pythonPath = pythonPath;
-        processLogger.infof("Python interpreter set to: %s", pythonPath);
+        this.mode = mode;
 
-        string scriptName;
-        final switch (mode) // 'final switch' ensures you handle every TaskMode enum
-        {
-        case TaskMode.ALIGN:
-            scriptName = "align_worker.py";
-            break;
-        case TaskMode.TEST:
-            scriptName = "test_worker.py";
-            break;
-        case TaskMode.TILING:
-            scriptName = "tiling_worker.py";
-            break;
-        case TaskMode.MOCK:
-            scriptName = "mock_worker.py";
-            break;
-        }
+        // Resolve the workflow string once at instantiation
+        this.workflow = () {
+            final switch (mode)
+            {
+            case TaskMode.ALIGN:
+                return "ALIGN";
+            case TaskMode.TEST:
+                return "TEST";
+            case TaskMode.TILING:
+                return "TILING";
+            case TaskMode.MOCK:
+                return "MOCK";
+            }
+        }();
+
+        processLogger.infof("Python interpreter set to: %s", pythonPath);
 
         this.scriptPath = buildPath(thisExePath().dirName(), "..", "engine", scriptName).absolutePath();
         enforce(this.scriptPath.exists,
             "CRITICAL: Engine script missing at " ~ this.scriptPath);
 
-        processLogger.infof("ProcessRunner initialized for %s mode.", mode);
+        processLogger.infof("ProcessRunner initialized for %s mode.", this.workflow);
     }
 
     public Pid spawn_worker(string jsonPath, size_t chunk_id)
     {
         try
         {
-            processLogger.infof("Spawning process for Chunk %d", chunk_id);
+            processLogger.infof("[%s] Spawning process for Chunk %d", this.workflow, chunk_id);
+
             return spawnProcess([
-                pythonPath, scriptPath, jsonPath, chunk_id.to!string
+                pythonPath,
+                scriptPath,
+                this.workflow,
+                jsonPath,
+                chunk_id.to!string
             ]);
         }
         catch (Exception e)
         {
             processLogger.errorf("System error spawning Chunk %d: %s", chunk_id, e.msg);
-            return Pid.init; // Return an invalid Pid
+            return Pid.init;
         }
     }
 }

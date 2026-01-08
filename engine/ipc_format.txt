@@ -1,1 +1,1 @@
-python engine_script plan_path chunk_idx
+PYTHONPATH  worker.py   workflow    plan_path   chunk_idx   [rest of args are positionless]

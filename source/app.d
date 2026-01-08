@@ -9,6 +9,7 @@ import std.conv : to;
 import std.json;
 import std.algorithm.iteration;
 import std.datetime.systime : SysTime, Clock;
+import std.datetime.stopwatch : StopWatch, AutoStart;
 import std.string;
 import std.logger;
 
@@ -28,6 +29,7 @@ void main(string[] args)
     Config cfg = loadConfig(configPath);
     SysTime currentTime = Clock.currTime();
     string currentTimeString = currentTime.toISOExtString().replace(":", "-");
+    StopWatch sw = StopWatch(AutoStart.no);
 
     // Route Ctrl-C to handleInterrupt
     import core.stdc.signal;
@@ -40,6 +42,7 @@ void main(string[] args)
     bool alignMode = false;
     bool testMode = false;
     bool tilingMode = false;
+    bool benchmarkMode = false;
 
     // CLI Argument Parsing
     auto helpInformation = getopt(
@@ -48,7 +51,8 @@ void main(string[] args)
         "test", "Run alignment testbench", &testMode,
         "tiling", "Perform image tiling for ML", &tilingMode,
         "target|i", "Target directory (Default: PWD)", &target,
-        "depth", "Max tree depth to scan (Default: 3)", &maxDepth
+        "depth", "Max tree depth to scan (Default: 3)", &maxDepth,
+        "benchmark|b", "Benchmark Mode (Tracks Execution Time)", &benchmarkMode,
     );
 
     if (helpInformation.helpWanted)
@@ -75,7 +79,10 @@ void main(string[] args)
     writeln("Target: ", target);
     writeln("Depth:  ", maxDepth);
     writeln("License:  Community Edition (Non-Commercial User Only)");
+    if (benchmarkMode) writeln("Benchmark Mode: Enabled");
     writeln("--------------------------------------------------");
+
+    sw.start();
 
     setTargetPath(absolutePath(target));
     writeln("Target Path set to: ", targetPath);
@@ -116,16 +123,28 @@ void main(string[] args)
         .absolutePath();
     mainLogger.infof("Internal Python Runtime Path: %s", python_path);
 
-    ProcessRunner runner = new ProcessRunner(mode, python_path);
-    Scheduler controller = new Scheduler(runner, planOutputPath, 150);
+    ProcessRunner runner = new ProcessRunner(python_path, "worker.py", mode);
+    Scheduler controller = new Scheduler(runner, planOutputPath);
 
     bool ret = controller.execute_plan();
 
     writeln("--------------------------------------------------");
     if (ret)
-        writeln("All Tasks Finished Successfully");
+    {
+        write("All Tasks Finished Successfully ");
+        if (benchmarkMode)
+        {
+            writefln("in %s", sw.peek().toString());
+        }
+        else
+        {
+            writeln();
+        }
+    }
     else
+    {
         controller.print_summary();
-    writeln("--------------------------------------------------");
-    mainLogger.info("Finished");
+        writeln("--------------------------------------------------");
+        mainLogger.info("Finished");
+    }
 }
