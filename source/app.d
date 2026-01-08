@@ -99,11 +99,9 @@ void main(string[] args)
         LogLevel.info, CreateFolder.yes);
     workerLogPath = buildPath(logDir, "worker_%u_" ~ currentTimeString ~ ".log");
 
-    writeln("Generating Process Plan...");
+    writeln("Generating Process Plan...\n");
 
     DatasetChunk[] plan = generate_plan(target, maxDepth);
-
-    writeln("\nTotal Chunks to process: ", plan.length);
 
     size_t plan_size = reduce!((a, s) => a + s.chunk_size)(0UL, plan);
     UsageLimitTracker UsageLimitTracker = new UsageLimitTracker();
@@ -114,7 +112,7 @@ void main(string[] args)
     save_plan_to_json(plan, planOutputPath);
     mainLogger.infof("Generated Process Plan at %s", planOutputPath);
 
-    writeln("Ready to Spawn Workers.");
+    writeln("\nReady to Spawn Workers.");
     writeln("--------------------------------------------------");
 
     writeln("Spawning Workers...\n");

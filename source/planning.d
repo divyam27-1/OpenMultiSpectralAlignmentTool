@@ -105,6 +105,10 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth)
 
 public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
 {
+    // since this can take some time we can implement progress bar for UX
+    import tui_h;
+    ProgressBar progBar = ProgressBar(to!int(chunks.length) + 1);
+
     JSONValue[] json_chunks;
 
     foreach (size_t i, chunk; chunks)
@@ -135,14 +139,18 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
 
         j_chunk["images"] = j_images;
         json_chunks ~= j_chunk;
+
+        progBar.update(to!int(i)+1, 1);
     }
 
     JSONValue final_root = JSONValue(json_chunks);
 
     // Write to file with pretty printing for debugging
     std.file.write(output_path, final_root.toPrettyString());
+    progBar.update(to!int(chunks.length)+1, 0);
 
     planLogger.info("Plan successfully serialized to: " ~ output_path);
+    progBar.finish();
 }
 
 // Recursive discovery of folders containing files
