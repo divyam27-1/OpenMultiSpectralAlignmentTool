@@ -9,50 +9,6 @@ from collections import defaultdict
 
 from typing import List, Dict
 
-def load_multispectral_samples(dataset_dir: str, bands: List[str]) -> List[Dict]:
-    """
-    Load and group multispectral images from a single directory.
-
-    Args:
-        dataset_dir: Path containing .tif files
-        bands: List of band identifiers (e.g. ["r", "g", "b", "nir"])
-
-    Returns:
-        A list of samples, each with:
-            {
-                "fname_base": str,
-                "bands": {band_name: image_array}
-            }
-    """
-    grouped = defaultdict(dict)
-    band_suffixes = {b: f"_{b.upper()}" for b in bands}
-
-    for fname in os.listdir(dataset_dir):
-        if not fname.lower().endswith(".tif"):
-            continue
-
-        base, _ = os.path.splitext(fname)
-
-        for band, suffix in band_suffixes.items():
-            if base.endswith(suffix):                   #TODO: Need to change to take from image metadata instead of image name
-                base_name = base[:-len(suffix)]
-                img = cv2.imread(
-                    os.path.join(dataset_dir, fname),
-                    cv2.IMREAD_UNCHANGED
-                )
-                grouped[base_name][band] = img
-                grouped[base_name]["fname_base"] = base_name
-
-    samples_out = []
-    for sample in grouped.values():
-        if all(b in sample for b in bands):
-            samples_out.append({
-                "fname_base": sample["fname_base"],
-                "bands": {b: sample[b] for b in bands},
-            })
-
-    return samples_out
-
 def compute_phase_correlations(samples: list[dict]) -> list[dict]:
     """
     Compute phase correlation between all band pairs for each sample

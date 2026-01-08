@@ -45,8 +45,14 @@ def main():
     logging.info(f"Loaded plan for task chunk {task_chunk}, processing {len(task_images_paths)} images.")
 
     images = wu.load_chunk(task_images_paths)
+    
+    if workflow == "MOCK":
+        time.sleep(random.randint(1,3))
+        
+    elif workflow == "ALIGN":
+        pass
 
-    if workflow == "TEST":
+    elif workflow == "TEST":
             
         samples = []
         for metadata, band_data in zip(task_images_paths, images):
@@ -76,6 +82,9 @@ def main():
         print(f"\nSummary of Chunk {task_chunk}:\n{', '.join(f'{k}: {v:.4f}' if isinstance(v, float) else f'{k}: {v}' for k, v in phase_results_summary.items())}")
 
         del phase_results
+    
+    elif workflow == "TILE":
+        pass
         
     logging.info(f"SUCCESS: Completed processing chunk {task_chunk}")
     print(f"SUCCESS: Completed processing chunk {task_chunk}")
