@@ -93,7 +93,7 @@ public DatasetChunk[] generate_plan(string root_path, int maxDepth)
 
             found_multispectral_images[img_base].bands ~= img_band;
             found_multispectral_images[img_base].fname[img_band] = entry.name;
-            found_multispectral_images[img_base].file_size += getSize(entry.name);     // TODO remove this after testing
+            found_multispectral_images[img_base].file_size += getSize(entry.name); // TODO remove this after testing
         }
     }
 
@@ -114,6 +114,8 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
         j_chunk["image_count"] = chunk.images.length;
         j_chunk["chunk_size"] = chunk.chunk_size;
         j_chunk["logfile"] = workerLogPath.format(i);
+
+        j_chunk["image_metadata"] = get_image_metadata(chunk.images[0]);    // TODO for v2.0.0: make this robust if we have multiple different sensor sources in one chunk so one DJI camera image in one chunk and one Sony multispec camera image in same chunk this would not handle it currently
 
         JSONValue[] j_images;
         foreach (img; chunk.images)
@@ -210,4 +212,46 @@ private DatasetChunk[] get_chunks(MultiSpectralImageGroup[string] images, int MA
     }
 
     return chunks;
+}
+
+private JSONValue get_image_metadata(MultiSpectralImageGroup image)
+{
+    import std.process : execute;
+
+    string[string] bandPaths = image.fname; 
+
+    // Locate exiftool relative to the D binary
+    string exifPath = buildPath(dirName(thisExePath()), "exiftool-13.45_64", "exiftool.exe");
+    
+    string[] requiredMetadata = [
+        "-DewarpData",
+        "-RelativeOpticalCenterX",
+        "-RelativeOpticalCenterY",
+        "-CalibratedOpticalCenterX",
+        "-CalibratedOpticalCenterY",
+        "-VignettingData",
+        "-BlackLevel"
+    ];
+
+    JSONValue metadata = JSONValue(string[string].init);
+
+    foreach (string band, string bandPath; bandPaths)
+    {
+        auto res = execute([exifPath, "-j"] ~ requiredMetadata ~ [bandPath]);
+
+        if (res.status != 0)
+        {
+            throw new Exception("Exiftool failed to extract metadata from band " ~ band ~ " at: " ~ bandPath);
+        }
+        
+        auto bandExifData = parseJSON(res.output);
+        
+        if (bandExifData.type != JSONType.array || bandExifData.array.length == 0) {
+            throw new Exception("Exiftool returned invalid JSON for band: " ~ band);
+        }
+
+        metadata[band] = bandExifData.array[0];
+    }
+
+    return metadata;
 }
