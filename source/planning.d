@@ -241,16 +241,46 @@ private JSONValue get_image_metadata(MultiSpectralImageGroup image)
 
         if (res.status != 0)
         {
+            planLogger.error("Exiftool failed to extract metadata from band " ~ band ~ " at: " ~ bandPath);
             throw new Exception("Exiftool failed to extract metadata from band " ~ band ~ " at: " ~ bandPath);
         }
         
         auto bandExifData = parseJSON(res.output);
         
         if (bandExifData.type != JSONType.array || bandExifData.array.length == 0) {
+            planLogger.error("Exiftool returned invalid JSON for band: " ~ band);
             throw new Exception("Exiftool returned invalid JSON for band: " ~ band);
         }
 
         metadata[band] = bandExifData.array[0];
+
+        // format DewarpData into an array
+        string dewarpData = metadata[band]["DewarpData"].str;
+        long dewarpDataSemicon_idx = dewarpData.lastIndexOf(';');
+        if (dewarpDataSemicon_idx == -1 || dewarpDataSemicon_idx >= (dewarpData.length - 1)) {
+            planLogger.error("Exiftool did not return correctly formatted DewarpData for band: " ~ band);
+        }
+
+        dewarpData = dewarpData[dewarpDataSemicon_idx + 1 .. $];
+        JSONValue dewarpArrayJSON = dewarpData.split(',')
+                                .map!(a => a.to!float)
+                                .array
+                                .JSONValue;
+
+        metadata[band]["DewarpData"] = dewarpArrayJSON;
+
+        import std.uni : isWhite;
+
+        // format VignettingData into an array
+        string vignetteData = metadata[band]["VignettingData"].str;
+        JSONValue vignetteDataArrayJSON = vignetteData.filter!(c => !c.isWhite)
+                                                    .array
+                                                    .split(',')
+                                                    .map!(a => a.to!float)
+                                                    .array
+                                                    .JSONValue;
+
+        metadata[band]["VignettingData"] = vignetteDataArrayJSON;
     }
 
     return metadata;
