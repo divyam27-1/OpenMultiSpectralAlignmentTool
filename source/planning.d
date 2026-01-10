@@ -134,6 +134,7 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
             j_img["base_name"] = (idx != -1) ? b_name[0 .. idx] : b_name;
             j_img["bands"] = JSONValue(img.fname);
             j_img["size"] = img.file_size;
+            j_img["extension"] = img.fname[img.bands[0]].extension;
 
             j_images ~= j_img;
         }
