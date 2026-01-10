@@ -107,6 +107,7 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
 {
     // since this can take some time we can implement progress bar for UX
     import tui_h;
+
     ProgressBar progBar = ProgressBar(to!int(chunks.length) + 1);
 
     JSONValue[] json_chunks;
@@ -119,7 +120,7 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
         j_chunk["chunk_size"] = chunk.chunk_size;
         j_chunk["logfile"] = workerLogPath.format(i);
 
-        j_chunk["image_metadata"] = get_image_metadata(chunk.images[0]);    // TODO for v2.0.0: make this robust if we have multiple different sensor sources in one chunk so one DJI camera image in one chunk and one Sony multispec camera image in same chunk this would not handle it currently
+        j_chunk["image_metadata"] = get_image_metadata(chunk.images[0]); // TODO for v2.0.0: make this robust if we have multiple different sensor sources in one chunk so one DJI camera image in one chunk and one Sony multispec camera image in same chunk this would not handle it currently
 
         JSONValue[] j_images;
         foreach (img; chunk.images)
@@ -140,20 +141,19 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
         j_chunk["images"] = j_images;
         json_chunks ~= j_chunk;
 
-        progBar.update(to!int(i)+1, 1);
+        progBar.update(to!int(i) + 1, 1);
     }
 
     JSONValue final_root = JSONValue(json_chunks);
 
     // Write to file with pretty printing for debugging
     std.file.write(output_path, final_root.toPrettyString());
-    progBar.update(to!int(chunks.length)+1, 0);
+    progBar.update(to!int(chunks.length) + 1, 0);
 
     planLogger.info("Plan successfully serialized to: " ~ output_path);
     progBar.finish();
 }
 
-// Recursive discovery of folders containing files
 private void scan_directory_recursive(string currentPath, int currentDepth, int maxDepth, ref Dataset[] datasets)
 {
     if (currentDepth > maxDepth)
@@ -161,12 +161,21 @@ private void scan_directory_recursive(string currentPath, int currentDepth, int 
     if (!exists(currentPath) || !isDir(currentPath))
         return;
 
+    // Skip if this directory itself is named "aligned"
+    import std.path : baseName;
+    import process_control_h : TaskMode, mode;
+
+    if (mode == TaskMode.ALIGN && currentPath.baseName.toLower == "aligned")
+    {
+        planLogger.infof("Skipping output directory: %s", currentPath);
+        return;
+    }
+
     // Use a lazy range to find if ANY file matches our criteria
     auto validFiles = dirEntries(currentPath, SpanMode.shallow)
         .filter!(e => e.isFile &&
                 ALLOWED_EXTENSIONS.canFind(extension(e.name).toUpper()));
 
-    // Use walkLength or a loop to get the count without loading the files into memory
     long validCount = validFiles.walkLength;
 
     if (validCount > 0)
@@ -175,7 +184,9 @@ private void scan_directory_recursive(string currentPath, int currentDepth, int 
         planLogger.infof("Valid dataset found: %s (%d candidate files)", currentPath, validCount);
     }
 
-    auto subDirs = dirEntries(currentPath, SpanMode.shallow).filter!(e => e.isDir);
+    auto subDirs = dirEntries(currentPath, SpanMode.shallow)
+        .filter!(e => e.isDir);
+
     foreach (dir; subDirs)
     {
         scan_directory_recursive(dir.name, currentDepth + 1, maxDepth, datasets);
@@ -226,11 +237,11 @@ private JSONValue get_image_metadata(MultiSpectralImageGroup image)
 {
     import std.process : execute;
 
-    string[string] bandPaths = image.fname; 
+    string[string] bandPaths = image.fname;
 
     // Locate exiftool relative to the D binary
     string exifPath = buildPath(dirName(thisExePath()), "exiftool-13.45_64", "exiftool.exe");
-    
+
     string[] requiredMetadata = [
         "-DewarpData",
         "-RelativeOpticalCenterX",
@@ -249,31 +260,50 @@ private JSONValue get_image_metadata(MultiSpectralImageGroup image)
 
         if (res.status != 0)
         {
-            planLogger.error("Exiftool failed to extract metadata from band " ~ band ~ " at: " ~ bandPath);
-            throw new Exception("Exiftool failed to extract metadata from band " ~ band ~ " at: " ~ bandPath);
+            planLogger.error(
+                "Exiftool failed to extract metadata from band " ~ band ~ " at: " ~ bandPath);
+            throw new Exception(
+                "Exiftool failed to extract metadata from band " ~ band ~ " at: " ~ bandPath);
         }
-        
+
         auto bandExifData = parseJSON(res.output);
-        
-        if (bandExifData.type != JSONType.array || bandExifData.array.length == 0) {
+
+        if (bandExifData.type != JSONType.array || bandExifData.array.length == 0)
+        {
             planLogger.error("Exiftool returned invalid JSON for band: " ~ band);
             throw new Exception("Exiftool returned invalid JSON for band: " ~ band);
         }
 
         metadata[band] = bandExifData.array[0];
 
+        if (
+            !("DewarpData" in metadata[band]) ||
+            !("VignettingData" in metadata[band]) ||
+            metadata[band]["DewarpData"].type != JSONType.string ||
+            metadata[band]["VignettingData"].type != JSONType.string
+            )
+        {
+            planLogger.info(
+                "Skipping Dewarp/Vignetting processing for band " ~ band ~
+                    " (missing or invalid metadata)"
+            );
+            continue;
+        }
+
         // format DewarpData into an array
         string dewarpData = metadata[band]["DewarpData"].str;
         long dewarpDataSemicon_idx = dewarpData.lastIndexOf(';');
-        if (dewarpDataSemicon_idx == -1 || dewarpDataSemicon_idx >= (dewarpData.length - 1)) {
-            planLogger.error("Exiftool did not return correctly formatted DewarpData for band: " ~ band);
+        if (dewarpDataSemicon_idx == -1 || dewarpDataSemicon_idx >= (dewarpData.length - 1))
+        {
+            planLogger.error(
+                "Exiftool did not return correctly formatted DewarpData for band: " ~ band);
         }
 
         dewarpData = dewarpData[dewarpDataSemicon_idx + 1 .. $];
         JSONValue dewarpArrayJSON = dewarpData.split(',')
-                                .map!(a => a.to!float)
-                                .array
-                                .JSONValue;
+            .map!(a => a.to!float)
+            .array
+            .JSONValue;
 
         metadata[band]["DewarpData"] = dewarpArrayJSON;
 
@@ -282,11 +312,11 @@ private JSONValue get_image_metadata(MultiSpectralImageGroup image)
         // format VignettingData into an array
         string vignetteData = metadata[band]["VignettingData"].str;
         JSONValue vignetteDataArrayJSON = vignetteData.filter!(c => !c.isWhite)
-                                                    .array
-                                                    .split(',')
-                                                    .map!(a => a.to!float)
-                                                    .array
-                                                    .JSONValue;
+            .array
+            .split(',')
+            .map!(a => a.to!float)
+            .array
+            .JSONValue;
 
         metadata[band]["VignettingData"] = vignetteDataArrayJSON;
     }
