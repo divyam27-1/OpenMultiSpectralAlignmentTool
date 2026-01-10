@@ -89,3 +89,17 @@ def load_image_bands(image_entry: dict) -> dict[str, np.ndarray]:
 
     logging.info(f"Successfully loaded {len(loaded_bands)} bands for {base_name}")
     return loaded_bands
+
+def save_multispectral_image(image: dict[str, np.ndarray], 
+                             fname: str,
+                             path: str,
+                             extn: str):
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+
+    bands = list(image.keys())
+    for band in bands:
+        fpath_out = os.path.join(path, f"{fname}_{band}"+extn)
+        cv2.imwrite(fpath_out, image[band])
+    
+    return f"DONEIMG:{fname}"
