@@ -3,8 +3,14 @@ import numpy as np
 import logging
 import sys
 import os
+import threading
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-def load_chunk(image_entries: list[dict]) -> list[dict[str, np.ndarray]]:
+LOADING_BATCH_SIZE = 2
+SAVING_BATCH_SIZE = 6
+
+def load_chunk(image_entries: list[dict[str, str]]) -> list[dict[str, np.ndarray]]:
     """
     Loads a chunk of image entries.
 
@@ -39,7 +45,7 @@ def load_chunk(image_entries: list[dict]) -> list[dict[str, np.ndarray]]:
     return loaded_chunk
 
 
-def load_image_bands(image_entry: dict) -> dict[str, np.ndarray]:
+def load_image_bands(image_entry: dict[str, str]) -> dict[str, np.ndarray]:
     """
     Loads all bands for a single image entry with strict validation.
 
@@ -103,3 +109,48 @@ def save_multispectral_image(image: dict[str, np.ndarray],
         cv2.imwrite(fpath_out, image[band])
     
     return f"DONEIMG:{fname}"
+
+def concurrent_saver_thread(q: Queue, results_dir: str):
+    """
+    Background thread that consumes aligned images from a queue 
+    and saves them in batches to maximize I/O throughput.
+    """
+    def _flush_save_batch(batch, results_dir):
+        """Internal helper to handle the ThreadPool saving logic."""
+        # max_workers=16 as per your original logic
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            futures = [
+                ex.submit(
+                    save_multispectral_image,
+                    image["bands"],
+                    image["fname_base"],
+                    results_dir,
+                    image["extension"]
+                ) for image in batch
+            ]
+
+            # Wait for this batch to hit the disk before clearing from memory
+            for future in as_completed(futures):
+                try:
+                    res = future.result()
+                    # logging.info(res) # Optional: verify save status
+                except Exception as e:
+                    pass # logging.error(f"Save failed: {e}")
+                
+    batch = []
+    
+    while True:
+        item = q.get()
+        
+        if item is None:
+            if batch:
+                _flush_save_batch(batch, results_dir)
+            q.task_done()
+            break
+        
+        batch.append(item)
+        if len(batch) >= SAVING_BATCH_SIZE:
+            _flush_save_batch(batch, results_dir)
+            batch = []
+            
+        q.task_done()
