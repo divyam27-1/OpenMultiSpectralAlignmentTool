@@ -64,7 +64,7 @@ void main(string[] args)
         return;
     }
 
-    TaskMode mode = alignMode ? TaskMode.ALIGN : (testMode ? TaskMode.TEST
+    mode = alignMode ? TaskMode.ALIGN : (testMode ? TaskMode.TEST
             : (tilingMode ? TaskMode.TILING : TaskMode.MOCK));
 
     writeln("--- Open Multispectral Alignment Tool (omspec) ---");
@@ -79,7 +79,8 @@ void main(string[] args)
     writeln("Target: ", target);
     writeln("Depth:  ", maxDepth);
     writeln("License:  Community Edition (Non-Commercial User Only)");
-    if (benchmarkMode) writeln("Benchmark Mode: Enabled");
+    if (benchmarkMode)
+        writeln("Benchmark Mode: Enabled");
     writeln("--------------------------------------------------");
 
     sw.start();
@@ -127,22 +128,12 @@ void main(string[] args)
     bool ret = controller.execute_plan();
 
     writeln("--------------------------------------------------");
-    if (ret)
-    {
-        write("All Tasks Finished Successfully ");
-        if (benchmarkMode)
-        {
-            writefln("in %s", sw.peek().toString());
-        }
-        else
-        {
-            writeln();
-        }
-    }
-    else
-    {
-        controller.print_summary();
-        writeln("--------------------------------------------------");
-        mainLogger.info("Finished");
-    }
+
+    string exitStatement = ret ? "All tasks finished successfully" : controller.get_summary();
+    string benchmarkStatement = benchmarkMode ? format("Time taken: %s", sw.peek().toString()) : "";
+
+    writeln(exitStatement);
+    if (benchmarkMode) writeln(benchmarkStatement);
+    writeln("--------------------------------------------------");
+    mainLogger.info("Finished");
 }

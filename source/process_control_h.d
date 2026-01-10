@@ -27,3 +27,5 @@ struct ProcessControlBlock
     SysTime start_time;
     int attempt;
 }
+
+__gshared TaskMode mode;
