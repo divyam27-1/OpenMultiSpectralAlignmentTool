@@ -58,15 +58,26 @@ def align_multispectral_sample(
             }
     """
     # ------------------------------------------------
-    # Stage 1 — Geometry (translation + undistortion)
+    # Stage 1 — Geometry (translation + undistortion + symmetric crop)
     # ------------------------------------------------
-    geom_bands = {}
+    
+    # Pre-calculate the global max shifts to ensure consistent cropping across all bands
+    max_shift_x = max(abs(m["RelativeOpticalCenterX"]) for m in metadata_config.values())
+    max_shift_y = max(abs(m["RelativeOpticalCenterY"]) for m in metadata_config.values())
+    margin_x = int(np.ceil(max_shift_x))
+    margin_y = int(np.ceil(max_shift_y))
 
+    h, w = next(iter(sample_data.values())).shape[:2]
+
+    geom_bands = {}
     for band, img in sample_data.items():
         m = metadata_config[band]
 
         img = translate_band(img, m["RelativeOpticalCenterX"], m["RelativeOpticalCenterY"])
         img = undistort_band(img, m["CameraMatrix"], m["DistCoeff"])
+
+        img = img[margin_y : h - margin_y, 
+                  margin_x : w - margin_x]
 
         geom_bands[band] = img
 
@@ -213,7 +224,7 @@ def to_edges(img: np.ndarray) -> np.ndarray:
 def align_ecc(
     base_img: np.ndarray,
     target_img: np.ndarray,
-    scale: float = 0.33,
+    scale: float = 0.4,
     min_cc: float = 0.8
 ) -> Tuple[bool, np.ndarray]:
     """ 
@@ -282,7 +293,6 @@ def align_ecc(
     )
 
     return True, aligned
-
 
 def crop_image(image, crop_percent):
     if crop_percent <= 0:
