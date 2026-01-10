@@ -239,16 +239,19 @@ public class Scheduler
         }
     }
 
-    public void print_summary()
+    public string get_summary()
     {
-        writefln("Final Status: %d Success, %d Failed %d Total",
+        import std.format;
+        
+        string line1 = format("Final Status: %d Success, %d Failed %d Total",
             this.completed, this.failed, this.completed + this.failed);
 
         if (this.failed > 0)
         {
-            writeln(
-                "Check logs/process_ and logs/worker_ for specific error details on failed chunks.");
+            line1 ~= "\nCheck logs/process_ and logs/worker_ for specific error details on failed chunks.";
         }
+
+        return line1;
     }
 }
 
