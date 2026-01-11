@@ -225,7 +225,8 @@ def align_ecc(
     base_img: np.ndarray,
     target_img: np.ndarray,
     scale: float = 0.4,
-    min_cc: float = 0.8
+    min_cc: float = 0.8,
+    blur: bool = True
 ) -> Tuple[bool, np.ndarray]:
     """ 
     Calculates and applies Enhanced Correlation Coefficient (ECC) translation.
@@ -238,6 +239,10 @@ def align_ecc(
     Returns: 
         Tuple: (status, image) The target image warped to match the coordinate system of the base image.
     """
+    
+    if blur:
+        base_img   = cv2.GaussianBlur(base_img, ksize=(3,3), sigmaX=0)
+        target_img = cv2.GaussianBlur(target_img, ksize=(3,3), sigmaX=0)
 
     # --- Edge extraction + downscale ---
     base_e = cv2.resize(
@@ -288,6 +293,85 @@ def align_ecc(
     aligned = cv2.warpAffine(
         target_img,
         warp_matrix,
+        (target_img.shape[1], target_img.shape[0]),
+        flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP
+    )
+
+    return True, aligned
+
+def align_ecc_pyramid(
+    base_img: np.ndarray,
+    target_img: np.ndarray,
+    scale: float = 0.5,
+    min_cc: float = 0.7
+) -> Tuple[bool, np.ndarray]:
+    """
+    Multiscale ECC Alignment (Gaussian Pyramid).
+    Starts at a very low resolution to capture large shifts and refines at higher scales.
+    """
+    # 1. Prepare Edge Maps (ECC performs best on gradients/edges)
+    base_img = cv2.GaussianBlur(base_img, (7,7), 0)
+    target_img = cv2.GaussianBlur(target_img, (7,7), 0)
+    base_e = to_edges(base_img)
+    target_e = to_edges(target_img)
+
+    # 2. Define Pyramid Scales (Coarse to Fine)
+    # We start at 1/8 to catch those ~12px to ~80px shifts
+    scales = [0.125, 0.25, scale]
+    
+    # Initialize with Identity Matrix
+    warp_matrix = np.eye(2, 3, dtype=np.float32)
+    last_cc = 0.0
+    current_scale = 0.0
+
+    # 3. Iterate through the Pyramid
+    for s in scales:
+        # Resize edges for the current pyramid level
+        b_scaled = cv2.resize(base_e, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+        t_scaled = cv2.resize(target_e, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+
+        # Normalize intensities for ECC
+        b_norm = b_scaled / (np.percentile(b_scaled, 95) + 1e-7)
+        t_norm = t_scaled / (np.percentile(t_scaled, 95) + 1e-7)
+
+        # Adjust the translation guess from the PREVIOUS scale to the CURRENT scale
+        if current_scale > 0:
+            rescale_factor = s / current_scale
+            warp_matrix[0, 2] *= rescale_factor
+            warp_matrix[1, 2] *= rescale_factor
+
+        # Update current scale tracking
+        current_scale = s
+
+        # Convergence criteria (higher iterations for coarser levels to ensure it 'locks in')
+        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100 if s < scale else 400, 1e-6)
+
+        try:
+            cc, warp_matrix = cv2.findTransformECC(
+                b_norm.astype(np.float32),
+                t_norm.astype(np.float32),
+                warp_matrix,
+                cv2.MOTION_TRANSLATION,
+                criteria
+            )
+            last_cc = cc
+        except cv2.error:
+            # If a coarse level fails, we keep the previous scale's matrix and try the next scale
+            logging.warning(f"ECC failed at scale {s}, continuing with previous guess.")
+            continue
+
+    # 4. Final Validation & Application
+    if last_cc < min_cc:
+        return False, target_img
+
+    # Rescale the final translation back to the FULL resolution image
+    final_warp = warp_matrix.copy()
+    final_warp[0, 2] /= current_scale
+    final_warp[1, 2] /= current_scale
+
+    aligned = cv2.warpAffine(
+        target_img,
+        final_warp,
         (target_img.shape[1], target_img.shape[0]),
         flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP
     )
