@@ -8,6 +8,21 @@ import std.string;
 import std.process : Pid;
 import std.datetime.systime : SysTime;
 
+struct ProcessResult
+{
+    size_t chunkId;
+    int exitCode;
+}
+
+struct ProcessControlBlock
+{
+    Pid pid;
+    size_t chunk_id;
+    string json_path;
+    SysTime start_time;
+    int attempt;
+}
+
 uint getPhysicalCoreCount()
 {
     DWORD returnLength = 0;
@@ -89,21 +104,6 @@ extern (Windows)
         SYSTEM_LOGICAL_PROCESSOR_INFORMATION* Buffer,
         DWORD* ReturnedLength
     );
-}
-
-struct ProcessResult
-{
-    size_t chunkId;
-    int exitCode;
-}
-
-struct ProcessControlBlock
-{
-    Pid pid;
-    size_t chunk_id;
-    string json_path;
-    SysTime start_time;
-    int attempt;
 }
 
 version (StandaloneTest)

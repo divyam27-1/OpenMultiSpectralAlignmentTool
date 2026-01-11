@@ -148,6 +148,7 @@ version (StandaloneTest)
             while (true)
             {
                 auto report = fetcher.getProcessReport(targetPid);
+                auto availableSystemRAM = fetcher.getSystemAvailablePhysical();
 
                 if (report.memory == 0)
                 {
@@ -155,9 +156,10 @@ version (StandaloneTest)
                     break;
                 }
 
-                writefln("PID: %d | RAM: %.2f MB | CPU: %.1f%%",
+                writefln("PID: %d | RAM: %.2f MB / %.2f MB | CPU: %.1f%%",
                     report.pid,
                     cast(double) report.memory / (1024 * 1024),
+                    cast(double) availableSystemRAM / (1024 * 1024),
                     report.cpu
                 );
 
