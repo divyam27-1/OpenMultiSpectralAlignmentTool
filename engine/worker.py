@@ -104,11 +104,8 @@ def main():
                 )
 
             if not aligned_samples:
-                logging.error(f"Alignment not done correctly for chunk {task_chunk}")
+                logging.error(f"Alignment not done correctly for chunk {task_chunk} batch {idx}")
                 sys.exit(1)
-
-            logging.info(f"Alignment step finished for chunk {task_chunk}")
-
             
             for metadata, band_data in zip(batch_paths, aligned_samples):
                 save_queue.put({
