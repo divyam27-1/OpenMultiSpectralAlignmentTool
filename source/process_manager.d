@@ -36,17 +36,3 @@ class ProcessManager {
         return hasCpuSlot && hasRamSlot;
     }
 }
-
-void main() {
-    uint pCores = getPhysicalCoreCount();
-    writeln("--- CPU Topology ---");
-    writeln("Physical Cores: ", pCores);
-    writeln("Logical Cores:  ", totalCPUs);
-    
-    if (pCores == totalCPUs) {
-        writeln("Note: Hyper-threading is likely disabled or not supported.");
-    } else {
-        writeln("Note: Hyper-threading detected.");
-    }
-}
-
