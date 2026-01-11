@@ -25,6 +25,7 @@ class ProcessMonitor
         this.monitorTid = spawn(&monitorWorker, thisTid, cast(shared)fetcher);
     }
 
+    // Refreshes the monitors local state
     void refresh()
     {
         M_TelemetryUpdate latest;

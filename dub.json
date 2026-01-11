@@ -23,7 +23,8 @@
 	"description": "Open Multispectral Alignment Tool",
 	"libs-windows": [
 		"psapi",
-		"user32"
+		"user32",
+		"kernel32"
 	],
 	"license": "PolyForm Noncommercial License 1.0.0",
 	"name": "openmultispectralalignmenttool",
