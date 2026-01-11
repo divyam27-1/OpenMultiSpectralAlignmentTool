@@ -20,4 +20,5 @@ public struct DatasetChunk
 	size_t chunk_size;
 	size_t file_count;
 	MultiSpectralImageGroup[] images;
+	size_t chunk_id;
 }

@@ -201,6 +201,9 @@ private DatasetChunk[] get_chunks(MultiSpectralImageGroup[string] images, int MA
     current_chunk.file_count = 0;
     current_chunk.chunk_size = 0;
 
+    int cid = 0;
+    current_chunk.chunk_id = cid;
+
     foreach (img_base; images.keys)
     {
         auto img_group = images[img_base];
@@ -219,6 +222,7 @@ private DatasetChunk[] get_chunks(MultiSpectralImageGroup[string] images, int MA
             current_chunk = DatasetChunk();
             current_chunk.file_count = 0;
             current_chunk.chunk_size = 0;
+            current_chunk.chunk_id = ++cid;
         }
 
         current_chunk.images ~= img_group;
