@@ -3,11 +3,10 @@ import numpy as np
 import logging
 import sys
 import os
-import threading
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-LOADING_BATCH_SIZE = 2
+LOADING_BATCH_SIZE = 1
 SAVING_BATCH_SIZE = 6
 
 def load_chunk(image_entries: list[dict[str, str]]) -> list[dict[str, np.ndarray]]:

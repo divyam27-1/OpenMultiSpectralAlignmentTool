@@ -58,7 +58,7 @@ def align_multispectral_sample(
             }
     """
     # ------------------------------------------------
-    # Stage 1 — Geometry (translation + undistortion + symmetric crop)
+    # Stage 1 — Geometry (translation + undistortion + cropping)
     # ------------------------------------------------
     
     # Pre-calculate the global max shifts to ensure consistent cropping across all bands
@@ -82,31 +82,17 @@ def align_multispectral_sample(
         geom_bands[band] = img
 
     # ------------------------------------------------
-    # Stage 2 — Shared symmetric black-border crop
-    # ------------------------------------------------
-    crop_y, crop_x = compute_symmetric_crop(
-        geom_bands,
-        black_threshold=1.0
-    )
-
-    cropped_bands = {}
-    for band, img in geom_bands.items():
-        cropped_bands[band] = apply_symmetric_crop(
-            img, crop_y, crop_x
-        )
-
-    # ------------------------------------------------
-    # Stage 3 — Radiometric correction (safe now)
+    # Stage 2 — Radiometric correction (safe now)
     # ------------------------------------------------
     radiometric_corrected_bands = {}
 
-    for band, img in cropped_bands.items():
+    for band, img in geom_bands.items():
         m = metadata_config[band]
         img = de_vignette_band(img, m["VignettingData"])
         radiometric_corrected_bands[band] = img
 
     # ------------------------------------------------
-    # Stage 4 - ECC based alignment
+    # Stage 3 - ECC based alignment
     # ------------------------------------------------
     if base_band == None:
         base_band = list(sample_data.keys())[0]
@@ -133,7 +119,21 @@ def align_multispectral_sample(
         logging.warning(f"ECC Failed completely for band {band}. Reverting to original image.")
         final_aligned_bands[band] = img
 
-    return final_aligned_bands
+    # ------------------------------------------------
+    # Stage 4 — Shared symmetric black-border crop
+    # ------------------------------------------------
+    crop_y, crop_x = compute_symmetric_crop(
+        final_aligned_bands,
+        black_threshold=1.0
+    )
+
+    cropped_bands = {}
+    for band, img in geom_bands.items():
+        cropped_bands[band] = apply_symmetric_crop(
+            img, crop_y, crop_x
+        )
+        
+    return cropped_bands
 
 
 def translate_band(img: np.ndarray, dx: float, dy: float) -> np.ndarray:
