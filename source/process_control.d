@@ -21,6 +21,7 @@ import std.exception : enforce;
 
 import process_control_h;
 import process_monitor;
+import process_monitor_h : WindowsMemoryFetcher, ProcessMonitorReport;
 import appstate;
 import config;
 import tui_h : ProgressBar;
@@ -33,22 +34,30 @@ public class Scheduler
     private ProcessRunner runner;
     private string planPath;
 
+    private ProcessMonitor monitor;
+
     private DList!size_t taskQueue;
     private ProcessControlBlock[Pid] pcbMap;
+    private ProcessMonitorReport[Pid] monitorMap;
 
     // initialized to default values just in case something goes wrong with reading cfg
     private size_t memoryUsage = 0;
-    private size_t maxMemory = 2048;
+    private size_t maxMemory = 2048 * 1024 * 1024;
     private int maxRetries = 3;
     private int tickIntervalMS = 75;
+    private ulong memoryHeadroom = 256 * 1024 * 1024;
+    private ulong availableRAM = 0;
 
     // generats TUI and progress bar
     private ProgressBar progBar;
     private int completed = 0, running = 0, failed = 0;
 
+    private int i = 0;
+
     this(ProcessRunner runner, string planPath, size_t maxMemoryMB = 2048)
     {
         this.runner = runner;
+        this.monitor = new ProcessMonitor(new WindowsMemoryFetcher());
         this.planPath = planPath;
         this.maxMemory = maxMemoryMB * 1024 * 1024;
 
@@ -84,7 +93,8 @@ public class Scheduler
             if (atomicLoad(shutdownRequested))
             {
                 writeln(
-                    "Shutdown requested by user. Stopping scheduler and Terminating all workers...");
+                    "Shutdown requested by user. Stopping scheduler and Terminating all workers..."
+                );
                 processLogger.warning("Shutdown requested by user. Stopping scheduler...");
                 break; // Exit the loop to trigger the scope(exit) cleanup
             }
@@ -121,6 +131,7 @@ public class Scheduler
             Pid[] completed_pids = [];
             Pid[] failed_pids = [];
             Pid[] retry_pids = [];
+            Pid[] running_pids = [];
             foreach (pid, pcb; this.pcbMap)
             {
                 auto result = tryWait(pid);
@@ -144,10 +155,20 @@ public class Scheduler
                         failed_pids ~= pid;
                         break;
                     }
+                    continue;
                 }
+
+                running_pids ~= pid;
             }
 
             // Phase 3: Cleanup and Retry
+            this.monitor.updateTracking(cast(uint[])running_pids.map!(p => p.processID).array);
+            this.monitor.refresh();
+            this.monitorMap.clear();
+            this.availableRAM = this.monitor.getAvailableSystemRAM();
+            foreach (Pid pid; running_pids)
+                this.monitorMap[pid] = this.monitor.getUsage(pid.processID);
+
             foreach (pid; completed_pids)
             {
                 processLogger.infof("Worker PID %s for Chunk %d completed successfully.",
@@ -155,6 +176,7 @@ public class Scheduler
 
                 this.memoryUsage -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
                 this.pcbMap.remove(pid);
+                this.monitorMap.remove(pid);
 
                 completed++;
             }
@@ -166,6 +188,7 @@ public class Scheduler
 
                 this.memoryUsage -= chunk_sizes[this.pcbMap[pid].chunk_id]; // decrease memory usage
                 this.pcbMap.remove(pid);
+                this.monitorMap.remove(pid);
 
                 failed++;
             }
@@ -179,6 +202,7 @@ public class Scheduler
 
                 // Remove the OLD PID key from the map immediately
                 this.pcbMap.remove(pid);
+                this.monitorMap.remove(pid);
 
                 if (next_attempt > maxRetries)
                 {
@@ -194,6 +218,7 @@ public class Scheduler
                 if (new_pid is Pid.init)
                 {
                     this.memoryUsage -= chunk_sizes[cid];
+                    taskQueue.insertBack(cid);
                     continue;
                 }
 
@@ -208,7 +233,9 @@ public class Scheduler
             }
 
             // Phase 4: Tick Wait
-            progBar.update(completed, cast(int)this.pcbMap.length, failed);
+            progBar.update(completed, cast(int) this.pcbMap.length, failed);
+            if (this.i++ % 70 == 0)
+                this.logResourceUsage(running_pids.map!(p => monitorMap[p]).array);
             Thread.sleep(dur!"msecs"(tickIntervalMS));
         }
 
@@ -236,13 +263,14 @@ public class Scheduler
             }
 
             progBar.finish();
+            this.monitor.shutDownWorker();
         }
     }
 
     public string get_summary()
     {
         import std.format;
-        
+
         string line1 = format("Final Status: %d Success, %d Failed %d Total",
             this.completed, this.failed, this.completed + this.failed);
 
@@ -252,6 +280,15 @@ public class Scheduler
         }
 
         return line1;
+    }
+
+    public void logResourceUsage(ProcessMonitorReport[] to_log)
+    {
+        foreach (ProcessMonitorReport report; to_log)
+        {
+            processLogger.infof("Usage of PID %d: CPU(%.2f), RAM(%d | %d)",
+                report.pid, report.cpu, report.memory / (1024 * 1024), this.availableRAM / (1024 * 1024));
+        }
     }
 }
 

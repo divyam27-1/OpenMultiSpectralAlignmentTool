@@ -2,6 +2,8 @@ module process_manager;
 
 import std.stdio;
 import std.parallelism : totalCPUs;
+import std.process : tryWait;
+import std.process : Pid;
 
 import process_manager_h;
 
@@ -10,8 +12,8 @@ class ProcessManager {
     public immutable size_t physicalCoreCount;
 
     this() {
-        this.physicalCoreCount = getPhysicalCoreCount();
-        if (this.physicalCoreCount == 1) this.physicalCoreCount = totalCPUs / 2;        // TODO: add a user cfg option to set SMT ratio
+        uint systemCoreCount = getPhysicalCoreCount();
+        this.physicalCoreCount = systemCoreCount == 1 ? totalCPUs / 2 : systemCoreCount;        // TODO: add a user cfg option to set SMT ratio
     }
 
     // Checks OS for finished processes and returns their results
@@ -26,13 +28,5 @@ class ProcessManager {
         }
 
         return results;
-    }
-
-    // New logic: Check hardware RAM and CPU availability
-    bool canSpawn(size_t requiredMB) {
-        auto sys = getResources(); // From your process_monitor_h
-        bool hasCpuSlot = pcbMap.length < physicalCoreCount;
-        bool hasRamSlot = (sys.availableRAM_MB > 1024) && (requiredMB < sys.availableRAM_MB); 
-        return hasCpuSlot && hasRamSlot;
     }
 }

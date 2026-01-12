@@ -15,13 +15,14 @@ struct ProcessMonitorReport
 
 struct M_TelemetryUpdate
 {
-    ProcessMonitorReport[uint] pidUsageMap;
+    immutable uint[] pidUsageKeys;
+    immutable ProcessMonitorReport[] pidUsageValues;
     ulong availableSystemRAM;
 }
 
 struct M_UpdatePidList
 {
-    uint[] pids;
+    immutable uint[] pids;
 }
 
 struct M_MonitorWorkerShutdown

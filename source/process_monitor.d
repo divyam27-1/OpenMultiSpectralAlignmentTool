@@ -14,7 +14,7 @@ import process_monitor_h;
 class ProcessMonitor
 {
     private ProcessMonitorReport[uint] pidUsageMap; // Track memory per PID
-    private ulong systemRAMUsage;
+    private ulong availableSystemRAM;
     private Tid monitorTid;
 
     private StopWatch sw = StopWatch(AutoStart.no);
@@ -22,33 +22,35 @@ class ProcessMonitor
 
     this(IMemoryFetcher fetcher)
     {
-        this.monitorTid = spawn(&monitorWorker, thisTid, cast(shared)fetcher);
+        this.monitorTid = spawn(&monitorWorker, thisTid, cast(shared) fetcher);
     }
 
     // Refreshes the monitors local state
     void refresh()
     {
-        M_TelemetryUpdate latest;
-        bool foundNew = false;
+        M_TelemetryUpdate* latest = null;
 
         // Keep pulling until the mailbox is EMPTY
-        while (receiveTimeout(dur!"msecs"(0), 
-            (M_TelemetryUpdate update) {
-                latest = update; // Overwrite with newer data
-                foundNew = true;
+        while (receiveTimeout(dur!"msecs"(0),
+                (M_TelemetryUpdate update) {
+                latest = new M_TelemetryUpdate(update.pidUsageKeys, update.pidUsageValues, update
+                .availableSystemRAM); // Overwrite with newer data
             }))
-        {}
-
-        if (foundNew)
         {
-            this.pidUsageMap = latest.pidUsageMap;
-            this.systemRAMUsage = latest.availableSystemRAM;
+        }
+
+        if (latest !is null)
+        {
+            this.pidUsageMap.clear();
+            foreach (size_t i, uint key; latest.pidUsageKeys)
+                this.pidUsageMap[key] = latest.pidUsageValues[i];
+            this.availableSystemRAM = latest.availableSystemRAM;
         }
     }
 
     void updateTracking(uint[] pids)
     {
-        send(monitorTid, M_UpdatePidList(pids));
+        send(monitorTid, M_UpdatePidList(pids.idup));
     }
 
     ProcessMonitorReport getUsage(uint pid)
@@ -58,7 +60,12 @@ class ProcessMonitor
 
     ulong getAvailableSystemRAM()
     {
-        return systemRAMUsage;
+        return availableSystemRAM;
+    }
+
+    void shutDownWorker()
+    {
+        send(monitorTid, M_MonitorWorkerShutdown());
     }
 }
 
@@ -72,10 +79,15 @@ void monitorWorker(Tid parentTid, shared IMemoryFetcher sFetcher)
 
     while (spin)
     {
-        receiveTimeout(dur!"msecs"(10),
-            (M_UpdatePidList msg) { pidsToTrack = msg.pids; },
-            (M_MonitorWorkerShutdown msg) { spin = false; }
-        );
+        try
+        {
+            receiveTimeout(dur!"msecs"(10),
+                (M_UpdatePidList msg) { pidsToTrack = msg.pids.dup; },
+                (M_MonitorWorkerShutdown msg) { spin = false; }
+            );
+        }
+        catch (OwnerTerminated e)
+            spin = false;
 
         if (sw.peek() < 500.msecs)
         {
@@ -83,13 +95,18 @@ void monitorWorker(Tid parentTid, shared IMemoryFetcher sFetcher)
             continue;
         }
 
-        M_TelemetryUpdate report;
+        uint[] reportKeys;
+        ProcessMonitorReport[] reportValues;
 
         foreach (pid; pidsToTrack)
         {
-            report.pidUsageMap[pid] = fetcher.getProcessReport(pid);
+            reportKeys ~= pid;
+            reportValues ~= fetcher.getProcessReport(pid);
         }
-        report.availableSystemRAM = fetcher.getSystemAvailablePhysical();
+
+        M_TelemetryUpdate report = M_TelemetryUpdate(
+            reportKeys.idup, reportValues.idup, fetcher.getSystemAvailablePhysical()
+        );
 
         send(parentTid, report);
         sw.reset();
