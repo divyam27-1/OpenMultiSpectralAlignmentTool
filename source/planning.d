@@ -108,7 +108,7 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
     // since this can take some time we can implement progress bar for UX
     import tui_h;
 
-    ProgressBar progBar = ProgressBar(to!int(chunks.length) + 1);
+    ProgressBar progBar = ProgressBar(to!int(chunks.length) + 2); // 1 extra step for parsing exifdata, 1 extra for writing to output file
 
     JSONValue[] json_chunks;
 
@@ -119,8 +119,6 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
         j_chunk["image_count"] = chunk.images.length;
         j_chunk["chunk_size"] = chunk.chunk_size;
         j_chunk["logfile"] = workerLogPath.format(i);
-
-        j_chunk["image_metadata"] = get_image_metadata(chunk.images[0]); // TODO for v2.0.0: make this robust if we have multiple different sensor sources in one chunk so one DJI camera image in one chunk and one Sony multispec camera image in same chunk this would not handle it currently
 
         JSONValue[] j_images;
         foreach (img; chunk.images)
@@ -144,6 +142,14 @@ public void save_plan_to_json(DatasetChunk[] chunks, string output_path)
 
         progBar.update(to!int(i) + 1, 1);
     }
+
+    import std.algorithm : map, joiner;
+
+    MultiSpectralImageGroup[] exifImageBatch = chunks.map!(c => c.images[0]).array;
+    JSONValue[] exifMetadata = get_image_batch_metadata(exifImageBatch);
+
+    for (size_t i = 0; i < json_chunks.length; i++)
+        json_chunks[i]["image_metadata"] = exifMetadata[i];
 
     JSONValue final_root = JSONValue(json_chunks);
 
@@ -238,93 +244,153 @@ private DatasetChunk[] get_chunks(MultiSpectralImageGroup[string] images, int MA
     return chunks;
 }
 
-private JSONValue get_image_metadata(MultiSpectralImageGroup image)
+private JSONValue[] get_image_batch_metadata(MultiSpectralImageGroup[] batch)
 {
+    import std.file : write, remove;
+    import std.path : buildPath;
     import std.process : execute;
+    import std.json : parseJSON, JSONValue, JSONType;
+    import appstate : targetPath;
 
-    string[string] bandPaths = image.fname;
+    if (batch.length == 0)
+        return JSONValue[].init;
 
-    // Locate exiftool relative to the D binary
     string exifPath = buildPath(dirName(thisExePath()), "exiftool-13.45_64", "exiftool.exe");
+    if (!exists(exifPath))
+    {
+        planLogger.error("Exiftool not found at expected path: " ~ exifPath);
+        throw new Exception("Exiftool not found at expected path: " ~ exifPath);
+    }
 
-    string[] requiredMetadata = [
-        "-DewarpData",
-        "-RelativeOpticalCenterX",
-        "-RelativeOpticalCenterY",
-        "-CalibratedOpticalCenterX",
-        "-CalibratedOpticalCenterY",
-        "-VignettingData",
-        "-BlackLevel"
+    planLogger.infof("Using Exiftool at path: %s", exifPath);
+
+    string[] flatPathList;
+    foreach (image; batch)
+        foreach (band; image.bands)
+            flatPathList ~= image.fname[band];
+
+    string exifPathsFile = buildPath(targetPath, "exif_paths.txt");
+    std.file.write(exifPathsFile, flatPathList.join("\n"));
+
+    version (release)
+        scope (exit)
+            if (exists(exifPathsFile))
+                remove(exifPathsFile);
+
+    string[] args = [
+        exifPath,
+        "-j", // JSON output
+        "-q", "-q", // double quiet mode to supress all info and warnings
+        "-DewarpData", "-RelativeOpticalCenterX", "-RelativeOpticalCenterY",
+        "-CalibratedOpticalCenterX", "-CalibratedOpticalCenterY",
+        "-VignettingData", "-BlackLevel",
+        "-@",
+        exifPathsFile
     ];
 
-    JSONValue metadata = JSONValue(string[string].init);
+    planLogger.info("Starting batch metadata extraction via Exiftool...");
 
-    foreach (string band, string bandPath; bandPaths)
+    auto res = execute(args);
+    if (res.status != 0)
     {
-        auto res = execute([exifPath, "-j"] ~ requiredMetadata ~ [bandPath]);
+        writeln("Exiftool Error Output");
+        planLogger.error("Exiftool batch failed to extract metadata.");
+        throw new Exception("Exiftool batch failed");
+    }
 
-        if (res.status != 0)
+    JSONValue[] allResults;
+    try
+    {
+        allResults = parseJSON(res.output).array;
+        if (allResults.length != flatPathList.length)
         {
-            planLogger.error(
-                "Exiftool failed to extract metadata from band " ~ band ~ " at: " ~ bandPath);
-            throw new Exception(
-                "Exiftool failed to extract metadata from band " ~ band ~ " at: " ~ bandPath);
+            planLogger.error("Mismatch in Exiftool results count and input file count.");
+            throw new Exception("Mismatch in Exiftool results count and input file count.");
+        }
+    }
+
+    catch (JSONException e)
+    {
+        // TRAP: Save the exact output that caused the crash
+        import std.file : write;
+
+        std.file.write("CRASH_DUMP.json", res.output);
+
+        planLogger.errorf("JSON Error: %s. Dumped raw output to CRASH_DUMP.json for inspection.", e
+                .msg);
+        throw e;
+    }
+
+    size_t resultIdx = 0;
+    JSONValue[] finalMetadata;
+
+    foreach (ref image; batch)
+    {
+        JSONValue groupContainer = JSONValue(string[string].init);
+
+        foreach (band; image.bands)
+        {
+            JSONValue rawBandData = allResults[resultIdx++];
+
+            rawBandData["DewarpData"] = get_dewarp_data_from_exif(rawBandData, band);
+            rawBandData["VignettingData"] = get_vignetting_data_from_exif(rawBandData, band);
+
+            groupContainer[band] = rawBandData;
         }
 
-        auto bandExifData = parseJSON(res.output);
+        finalMetadata ~= groupContainer;
+    }
 
-        if (bandExifData.type != JSONType.array || bandExifData.array.length == 0)
-        {
-            planLogger.error("Exiftool returned invalid JSON for band: " ~ band);
-            throw new Exception("Exiftool returned invalid JSON for band: " ~ band);
-        }
+    planLogger.info("Successfully extracted metadata for all images.");
+    return finalMetadata;
+}
 
-        metadata[band] = bandExifData.array[0];
+private JSONValue get_dewarp_data_from_exif(JSONValue rawData, string bandName)
+{
+    if ("DewarpData" !in rawData || rawData["DewarpData"].type != JSONType.string)
+        return JSONValue(null);
 
-        if (
-            !("DewarpData" in metadata[band]) ||
-            !("VignettingData" in metadata[band]) ||
-            metadata[band]["DewarpData"].type != JSONType.string ||
-            metadata[band]["VignettingData"].type != JSONType.string
-            )
-        {
-            planLogger.info(
-                "Skipping Dewarp/Vignetting processing for band " ~ band ~
-                    " (missing or invalid metadata)"
-            );
-            continue;
-        }
+    string data = rawData["DewarpData"].str;
+    long semiIdx = data.lastIndexOf(';');
 
-        // format DewarpData into an array
-        string dewarpData = metadata[band]["DewarpData"].str;
-        long dewarpDataSemicon_idx = dewarpData.lastIndexOf(';');
-        if (dewarpDataSemicon_idx == -1 || dewarpDataSemicon_idx >= (dewarpData.length - 1))
-        {
-            planLogger.error(
-                "Exiftool did not return correctly formatted DewarpData for band: " ~ band);
-        }
+    // Slice after semicolon if it exists
+    string cleanData = (semiIdx != -1) ? data[semiIdx + 1 .. $] : data;
 
-        dewarpData = dewarpData[dewarpDataSemicon_idx + 1 .. $];
-        JSONValue dewarpArrayJSON = dewarpData.split(',')
-            .map!(a => a.to!float)
+    try
+    {
+        return cleanData.split(',')
+            .map!(a => a.strip.to!float)
             .array
             .JSONValue;
+    }
+    catch (Exception e)
+    {
+        planLogger.error("Malformed DewarpData in band " ~ bandName);
+        return JSONValue(null);
+    }
+}
 
-        metadata[band]["DewarpData"] = dewarpArrayJSON;
+private JSONValue get_vignetting_data_from_exif(JSONValue rawData, string bandName)
+{
+    if ("VignettingData" !in rawData || rawData["VignettingData"].type != JSONType.string)
+        return JSONValue(null);
 
-        import std.uni : isWhite;
+    import std.uni : isWhite;
 
-        // format VignettingData into an array
-        string vignetteData = metadata[band]["VignettingData"].str;
-        JSONValue vignetteDataArrayJSON = vignetteData.filter!(c => !c.isWhite)
+    string data = rawData["VignettingData"].str;
+
+    try
+    {
+        return data.filter!(c => !c.isWhite)
             .array
             .split(',')
             .map!(a => a.to!float)
             .array
             .JSONValue;
-
-        metadata[band]["VignettingData"] = vignetteDataArrayJSON;
     }
-
-    return metadata;
+    catch (Exception e)
+    {
+        planLogger.error("Malformed VignettingData in band " ~ bandName);
+        return JSONValue(null);
+    }
 }
