@@ -103,34 +103,47 @@ void main(string[] args)
         LogLevel.info, CreateFolder.yes);
     workerLogPath = buildPath(logDir, "worker_%u_" ~ currentTimeString ~ ".log");
 
+    mainLogger.infof("Starting omspec in %s mode. Target: %s, MaxDepth: %d", mode, targetPath, maxDepth);
+    mainLogger.infof("Loaded Config: %s", cfg.toString());
+
     writeln("Generating Process Plan...\n");
 
-    DatasetChunk[] plan = generate_plan(target, maxDepth);
-
+    DatasetChunk[] plan = generate_plan(targetPath, maxDepth);
     size_t plan_size = reduce!((a, s) => a + s.chunk_size)(0UL, plan);
+    mainLogger.infof("Plan Generation Complete. Chunks: %d, Total Dataset Size: %d bytes (%.2f GB)",
+        plan.length, plan_size, cast(double) plan_size / (1024 * 1024 * 1024));
+
     UsageLimitTracker UsageLimitTracker = new UsageLimitTracker();
     if (!UsageLimitTracker.incrementAndCheck(plan_size))
         return;
 
     string planOutputPath = buildPath(target, "plan.json").absolutePath();
     save_plan_to_json(plan, planOutputPath);
-    mainLogger.infof("Generated Process Plan at %s", planOutputPath);
+    mainLogger.infof("Persistent plan saved to: %s", planOutputPath);
 
     writeln("\nReady to Spawn Workers.");
     writeln("--------------------------------------------------");
-
     writeln("Spawning Workers...\n");
 
     string python_path = buildPath(thisExePath().dirName(), "..", "python_3_11_14", "install", "python.exe")
         .absolutePath();
-    mainLogger.infof("Internal Python Runtime Path: %s", python_path);
+
+    if (!exists(python_path))
+        mainLogger.criticalf("Python runtime not found at: %s", python_path);
+    else
+        mainLogger.infof("Python runtime validated at: %s", python_path);
 
     ProcessRunner runner = new ProcessRunner(python_path, "worker.py", mode, planOutputPath);
     Scheduler controller = new Scheduler(runner, planOutputPath);
 
+    mainLogger.info("Handoff to Scheduler. Beginning execution loop...");
     bool ret = controller.execute_plan();
+    mainLogger.infof("Scheduler returned. Success: %s", ret);
 
     writeln("--------------------------------------------------");
+
+    mainLogger.infof("PERFORMANCE: Total Execution Time: %s", sw.peek().toString());
+    mainLogger.info(controller.get_summary().replace("\n", " | "));
 
     string exitStatement = ret ? "All tasks finished successfully" : controller.get_summary();
     string benchmarkStatement = benchmarkMode ? format("Time taken: %s", sw.peek().toString()) : "";
