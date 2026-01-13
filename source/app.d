@@ -98,6 +98,10 @@ void main(string[] args)
         LogLevel.info, CreateFolder.yes);
     processLogger = new FileLogger(buildPath(logDir, "process_" ~ currentTimeString ~ ".log"),
         LogLevel.info, CreateFolder.yes);
+    monitorLogger = new FileLogger(buildPath(logDir, "monitor_" ~ currentTimeString ~ ".log"),
+        LogLevel.info, CreateFolder.yes);
+    managerLogger = new FileLogger(buildPath(logDir, "manager_" ~ currentTimeString ~ ".log"),
+        LogLevel.info, CreateFolder.yes);
     workerLogPath = buildPath(logDir, "worker_%u_" ~ currentTimeString ~ ".log");
 
     writeln("Generating Process Plan...\n");
