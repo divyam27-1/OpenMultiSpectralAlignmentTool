@@ -43,6 +43,7 @@ void main(string[] args)
     bool testMode = false;
     bool tilingMode = false;
     bool benchmarkMode = false;
+    bool planOnlyMode = false;
 
     // CLI Argument Parsing
     auto helpInformation = getopt(
@@ -53,6 +54,7 @@ void main(string[] args)
         "target|i", "Target directory (Default: PWD)", &target,
         "depth", "Max tree depth to scan (Default: 3)", &maxDepth,
         "benchmark|b", "Benchmark Mode (Tracks Execution Time)", &benchmarkMode,
+        "plan-only", "Only generate the processing plan and exit", &planOnlyMode
     );
 
     if (helpInformation.helpWanted)
@@ -120,6 +122,12 @@ void main(string[] args)
     string planOutputPath = buildPath(target, "plan.json").absolutePath();
     save_plan_to_json(plan, planOutputPath);
     mainLogger.infof("Persistent plan saved to: %s", planOutputPath);
+
+    if (planOnlyMode)
+    {
+        writeln("Plan-Only mode enabled. Exiting after plan generation.");
+        return;
+    }
 
     writeln("\nReady to Spawn Workers.");
     writeln("--------------------------------------------------");
