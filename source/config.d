@@ -20,6 +20,8 @@ static struct Config
     int max_retries;
     int tick_interval_ms;
 
+    int smt_ratio;
+
     string toString() const
     {
         import std.format : format;
@@ -51,6 +53,7 @@ public Config loadConfig(string filePath)
     cfg.max_memory_mb = 4096; // 4GB default
     cfg.max_retries = 3;
     cfg.tick_interval_ms = 100;
+    cfg.smt_ratio = 1;
 
     if (!filePath.exists)
     {
@@ -93,6 +96,9 @@ public Config loadConfig(string filePath)
                 break;
             case "TICK_INTERVAL_MS":
                 cfg.tick_interval_ms = val.to!int;
+                break;
+            case "SMT_RATIO":
+                cfg.smt_ratio = val.to!int;
                 break;
             default:
                 break;

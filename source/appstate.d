@@ -14,3 +14,13 @@ void setTargetPath(string path)
     assert(_targetPath.length == 0, "targetPath already set");
     _targetPath = path;
 }
+
+enum TaskMode
+{
+    MOCK,
+    ALIGN,
+    TEST,
+    TILING
+}
+
+__gshared TaskMode mode;

@@ -21,6 +21,23 @@ struct ProcessControlBlock
     string json_path;
     SysTime start_time;
     int attempt;
+    size_t estimated_memory;
+}
+
+// After workers are completed, failed or retried, their corresponding chunks 
+// have to be loaded in this graveyard before Scheduler handles them
+struct ChunkGraveyard {
+    uint[] completed;
+    uint[] failed;
+    uint[] retries;
+}
+
+public enum SpawnVerdict {
+    OK,
+    SYSTEM_BUSY_CPU,
+    SYSTEM_BUSY_RAM,
+    LIMIT_REACHED_MEM,
+    SPAWN_FAILURE
 }
 
 uint getPhysicalCoreCount()

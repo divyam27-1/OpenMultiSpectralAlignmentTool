@@ -164,7 +164,7 @@ private void scan_directory_recursive(string currentPath, int currentDepth, int 
 
     // Skip if this directory itself is named "aligned"
     import std.path : baseName;
-    import process_control_h : TaskMode, mode;
+    import appstate : TaskMode, mode;
 
     if (mode == TaskMode.ALIGN && currentPath.baseName.toLower == "aligned")
     {

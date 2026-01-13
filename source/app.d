@@ -17,7 +17,7 @@ import appstate;
 import planning;
 import planning_h;
 import process_control;
-import process_control_h;
+import process_manager;
 import config;
 import usage_tracker;
 import loggers;
@@ -64,17 +64,16 @@ void main(string[] args)
         return;
     }
 
-    mode = alignMode ? TaskMode.ALIGN : (testMode ? TaskMode.TEST
-            : (tilingMode ? TaskMode.TILING : TaskMode.MOCK));
+    mode = alignMode ? TaskMode.ALIGN : (testMode ? TaskMode.TEST : (tilingMode ? TaskMode.TILING
+            : TaskMode.MOCK));
 
     writeln("--- Open Multispectral Alignment Tool (omspec) ---");
     version (release)
     {
     }
     else
-    {
         writeln("Debug Build at ", thisExePath());
-    }
+
     writeln("Mode:   ", mode);
     writeln("Target: ", target);
     writeln("Depth:  ", maxDepth);
@@ -126,7 +125,7 @@ void main(string[] args)
         .absolutePath();
     mainLogger.infof("Internal Python Runtime Path: %s", python_path);
 
-    ProcessRunner runner = new ProcessRunner(python_path, "worker.py", mode);
+    ProcessRunner runner = new ProcessRunner(python_path, "worker.py", mode, planOutputPath);
     Scheduler controller = new Scheduler(runner, planOutputPath);
 
     bool ret = controller.execute_plan();
@@ -137,7 +136,8 @@ void main(string[] args)
     string benchmarkStatement = benchmarkMode ? format("Time taken: %s", sw.peek().toString()) : "";
 
     writeln(exitStatement);
-    if (benchmarkMode) writeln(benchmarkStatement);
+    if (benchmarkMode)
+        writeln(benchmarkStatement);
     writeln("--------------------------------------------------");
     mainLogger.info("Finished");
 }
