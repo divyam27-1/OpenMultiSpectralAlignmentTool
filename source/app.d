@@ -87,9 +87,9 @@ void main(string[] args)
     setTargetPath(absolutePath(target));
     writeln("Target Path set to: ", targetPath);
 
-    string logDir = buildPath(target, "log");
+    string logDir = buildPath(targetPath, "log");
     if (!exists(logDir))
-        mkdir(logDir);
+        mkdirRecurse(logDir);
 
     mainLogger = new FileLogger(buildPath(logDir, "main_" ~ currentTimeString ~ ".log"),
         LogLevel.info, CreateFolder.yes);

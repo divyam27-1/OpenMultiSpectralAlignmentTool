@@ -39,10 +39,14 @@ class ProcessManager
     private size_t currentMemoryUsage;
     private size_t availableSystemRAM;
 
+    private int cpuCheckStreak = 0;
+    private const int cpuCheckStreakThreshold = 5;
+
     this(ProcessRunner runner)
     {
         this.runner = runner;
         this.monitor = new ProcessMonitor(new WindowsMemoryFetcher());
+        this.monitor.refresh();
 
         auto cfg = loadConfig(buildPath(thisExePath().dirName, "omspec.cfg").absolutePath());
         this.maxMemory = cfg.max_memory_mb * 1024 * 1024;
@@ -55,13 +59,15 @@ class ProcessManager
             : systemCoreCount;
         this.effectiveCoreCount = this.physicalCoreCount + 0.2 * (
             this.logicalCoreCount - this.physicalCoreCount);
+
+        this.updateMonitor();
     }
 
     public SpawnVerdict trySpawn(size_t chunkId, size_t chunkSize)
     {
         this.updateMonitor();
 
-        SpawnVerdict verdict = this.canSpawn(chunkSize);
+        SpawnVerdict verdict = this.canSpawn(chunkId, chunkSize);
         if (verdict != SpawnVerdict.OK)
             return verdict;
 
@@ -89,39 +95,63 @@ class ProcessManager
         return SpawnVerdict.OK;
     }
 
-    public SpawnVerdict canSpawn(size_t expectedChunkSize)
+    public SpawnVerdict canSpawn(size_t chunkId, size_t expectedChunkSize)
     {
         import std.math : isNaN;
+        import std.format : format;
 
         // 1. Theoretical Check
         if (currentMemoryUsage + expectedChunkSize > maxMemory)
+        {
+            managerLogger.infof("[CAN_SPAWN] Chunk %d: FAIL (Theoretical) | Req: %dMB + Pool: %dMB > Max: %dMB",
+                chunkId, expectedChunkSize / 1024 / 1024, currentMemoryUsage / 1024 / 1024, maxMemory / 1024 / 1024);
             return SpawnVerdict.LIMIT_REACHED_MEM;
+        }
 
         // 2. RAM Check
-        if (availableSystemRAM < max(memoryHeadroom, memoryHeadroom / 2 + expectedChunkSize))
+        size_t requiredHeadroom = max(memoryHeadroom, memoryHeadroom / 2 + expectedChunkSize);
+        if (availableSystemRAM < requiredHeadroom)
+        {
+            managerLogger.infof("[CAN_SPAWN] Chunk %d: FAIL (Sys RAM) | Avl: %dMB < ReqHeadroom: %dMB",
+                chunkId, availableSystemRAM / 1024 / 1024, requiredHeadroom / 1024 / 1024);
             return SpawnVerdict.SYSTEM_BUSY_RAM;
+        }
 
-        // 3. CPU Check
+        // 3. CPU Check Logic
         double totalCpuUsage = 0;
         int warmingUp = 0;
         foreach (pid; pcbMap.keys)
         {
             auto report = monitorMap.get(pid, ProcessMonitorReport(0, 0, double.nan));
-
-            // If it's NaN (new process), assume 80% load to prevent over-spawning
-            totalCpuUsage += isNaN(report.cpu) ? 80.0 : report.cpu;
-
-            // If a worker has less than 5% usage, it is probably warming up
-            if (report.cpu < 5.0)
+            totalCpuUsage += isNaN(report.cpu) ? 95.0 : report.cpu;
+            if (report.cpu < 25.0)
                 warmingUp++;
         }
 
-        double effectiveCoresUsed = totalCpuUsage / 100.0 + warmingUp * 0.6;
-
-        // We can schedule if current use is at least 1 "core" below threshold
-        if (effectiveCoresUsed > (effectiveCoreCount - 1.0))
+        double effectiveCoresUsed = totalCpuUsage / 100.0 + warmingUp * 0.95;
+        if (effectiveCoresUsed + 1 > effectiveCoreCount)
+        {
+            managerLogger.infof(
+                "[CAN_SPAWN] Chunk %d: FAIL (CPU) | UsedCores: %.1f vs Effective Cores: %.1f (Warm: %d)",
+                chunkId, effectiveCoresUsed, effectiveCoreCount, warmingUp);
             return SpawnVerdict.SYSTEM_BUSY_CPU;
+        }
 
+        // 3.5 If CPU check has passed, wait for it to stabilize
+        if (cpuCheckStreak++ < cpuCheckStreakThreshold)
+        {
+            managerLogger.infof(
+                "[CAN_SPAWN] Chunk %d: STABILIZING (CPU) | UsedCores: %.1f vs Effective Cores: %.1f (Warm: %d)",
+                chunkId, effectiveCoresUsed, effectiveCoreCount, warmingUp);
+            return SpawnVerdict.SYSTEM_BUSY_CPU;
+        }
+
+        // 4. Success Log
+        managerLogger.infof("[CAN_SPAWN] Chunk %d: OK | Pool: %dMB | AvlRAM: %dMB | Cores: %.1f/%.1f",
+            chunkId, currentMemoryUsage / 1024 / 1024, availableSystemRAM / 1024 / 1024,
+            effectiveCoresUsed, effectiveCoreCount);
+
+        cpuCheckStreak = 0;
         return SpawnVerdict.OK;
     }
 
@@ -207,6 +237,11 @@ class ProcessManager
         this.monitor.updateTracking([]);
         this.monitor.shutDownWorker();
     }
+
+    public size_t[2] getRAMDetails()
+    {
+        return [this.currentMemoryUsage, this.availableSystemRAM];
+    }
 }
 
 public class ProcessRunner
@@ -219,11 +254,20 @@ public class ProcessRunner
     private string workflow;
     private string planPath;
 
+    string[string] workerEnv;
+
     this(string pythonPath, string scriptName, TaskMode mode, string planPath)
     {
         this.pythonPath = pythonPath;
         this.mode = mode;
         this.planPath = planPath;
+        
+        this.workerEnv = environment.toAA(); 
+        this.workerEnv["OMP_NUM_THREADS"] = "1";
+        this.workerEnv["MKL_NUM_THREADS"] = "1";
+        this.workerEnv["OPENBLAS_NUM_THREADS"] = "1";
+        this.workerEnv["VECLIB_MAXIMUM_THREADS"] = "1";
+        this.workerEnv["OPENCV_FOR_THREADS_NUM"] = "1";
 
         // Resolve the workflow string once at instantiation
         this.workflow = () {
@@ -262,7 +306,7 @@ public class ProcessRunner
                 this.workflow,
                 this.planPath,
                 chunk_id.to!string
-            ]);
+            ], this.workerEnv);
         }
         catch (Exception e)
         {
