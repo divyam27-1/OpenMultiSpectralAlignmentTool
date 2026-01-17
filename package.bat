@@ -33,6 +33,9 @@ robocopy python_3_11_14 %DIST_DIR%\python_3_11_14 /E /R:0 /W:0 /COPY:DAT /DCOPY:
 :: Copy the embedded Exiftool for Windows
 robocopy "bin\exiftool-13.45_64" "%DIST_DIR%\bin\exiftool-13.45_64" /E /COPY:DAT /R:3 /W:5 /MT:8 /NFL /NDL /NJH /NJS /NP
 
+:: Copy the ZMQ DLLs
+xcopy /y /d libs\*.dll %DIST_DIR%\bin\
+
 :: Copy the License
 copy LICENSE.txt %DIST_DIR%
 

@@ -1,5 +1,7 @@
 {
 	"fileVersion": 1,
 	"versions": {
+		"zeromq": "6.1.2+zmq-4-3-2",
+		"zmqd": "1.3.0"
 	}
 }

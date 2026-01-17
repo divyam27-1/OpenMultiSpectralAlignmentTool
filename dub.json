@@ -9,25 +9,35 @@
 		},
 		{
 			"name": "release_build",
+			"targetType": "executable",
 			"versions": [
 				"release"
-			],
-			"targetType": "executable"
+			]
 		},
 		{
 			"name": "dev_build",
-			"targetType": "executable"
+			"targetType": "executable",
+			"postBuildCommands": [
+				"xcopy /y /d libs\\*.dll bin\\"
+			]
 		}
 	],
 	"copyright": "Copyright © 2025, Divyam Tiwari",
+	"dependencies": {
+		"zmqd": "~>1.3.0"
+	},
 	"description": "Open Multispectral Alignment Tool",
 	"libs-windows": [
+		"kernel32",
 		"psapi",
 		"user32",
-		"kernel32"
+		"zmq"
+	],
+	"lflags": [
+		"/LIBPATH:libs"
 	],
 	"license": "PolyForm Noncommercial License 1.0.0",
 	"name": "openmultispectralalignmenttool",
-	"targetPath": "bin",
-	"targetName": "omspec"
+	"targetName": "omspec",
+	"targetPath": "bin"
 }
