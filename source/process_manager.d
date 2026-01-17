@@ -118,6 +118,15 @@ class ProcessManager
         }
 
         // 3. CPU Check Logic
+		if (this.getActiveProcessCount() + 1 > this.effectiveCoreCount) 
+		{
+			managerLogger.infof(
+				"[CAN_SPAWN] Chunk %d: FAIL (CPU) | RunningProcesses: %.1f vs Effective Cores: %.1f",
+			    chunkId, this.getActiveProcessCount(), effectiveCoreCount);
+			          
+			return SpawnVerdict.SYSTEM_BUSY_CPU;
+		}
+        
         double totalCpuUsage = 0;
         int warmingUp = 0;
         foreach (pid; pcbMap.keys)
