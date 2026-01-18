@@ -7,4 +7,5 @@ __gshared FileLogger planLogger;
 __gshared FileLogger processLogger;
 __gshared FileLogger monitorLogger;
 __gshared FileLogger managerLogger;
+__gshared FileLogger heraldLogger;
 __gshared string workerLogPath;

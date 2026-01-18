@@ -103,6 +103,8 @@ void main(string[] args)
         LogLevel.info, CreateFolder.yes);
     managerLogger = new FileLogger(buildPath(logDir, "manager_" ~ currentTimeString ~ ".log"),
         LogLevel.info, CreateFolder.yes);
+    heraldLogger = new FileLogger(buildPath(logDir, "herald_" ~ currentTimeString ~ ".log"),
+        LogLevel.info, CreateFolder.yes);
     workerLogPath = buildPath(logDir, "worker_%u_" ~ currentTimeString ~ ".log");
 
     mainLogger.infof("Starting omspec in %s mode. Target: %s, MaxDepth: %d", mode, targetPath, maxDepth);
