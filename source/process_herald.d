@@ -12,10 +12,11 @@ import core.thread;
 
 import process_herald_h;
 import loggers : heraldLogger;
+import appstate : mode;
 
 class ProcessHerald
 {
-    private WorkerConnection[uint] workers;
+    public WorkerConnection[uint] workers;
     private HeraldMessage[] globalInbox;
 
     public Mutex workersMutex;
@@ -41,41 +42,47 @@ class ProcessHerald
 
     string[2] registerWorker(uint workerId)
     {
-        Socket* socketOut = new Socket(SocketType.push);
-        socketOut.bind("tcp://127.0.0.1:*");
-        string outEndpoint = cast(string) socketOut.lastEndpoint;
-
-        Socket* socketIn = new Socket(SocketType.pull);
-        socketIn.bind("tcp://127.0.0.1:*");
-        string inEndpoint = cast(string) socketIn.lastEndpoint;
-
-        synchronized (workersMutex)
+        send(this.heraldTid, RegisterRequest(workerId, thisTid));
+        try
         {
-            workers[workerId] = new WorkerConnection(workerId, socketIn, socketOut, this.hbInterval);
-        }
-        heraldLogger.info("Registered worker %s with endpoints IN: %s OUT: %s", workerId, inEndpoint, outEndpoint);
+            auto res = receiveOnly!M_RegisterResponse();
 
-        return [inEndpoint, outEndpoint];
+            heraldLogger.infof("Registered worker %d with endpoints IN: %s OUT: %s",
+                workerId, res.inEndpoint, res.outEndpoint);
+
+            return [res.inEndpoint, res.outEndpoint];
+        }
+        catch (OwnerTerminated e)
+        {
+            heraldLogger.critical("Herald thread died during worker registration!");
+            return ["", ""];
+        }
     }
 
     void deregisterWorker(uint workerId)
     {
+        send(this.heraldTid, DeregisterRequest(workerId));
+        heraldLogger.infof("Sent Deregister request for worker %d", workerId);
+    }
+
+    bool sendTask(uint workerId, uint chunkId, uint imageIdx)
+    {
+        // Check if worker exists locally first (optional optimization)
         synchronized (workersMutex)
         {
-            if (workerId in this.workers)
-            {
-                auto conn = workers[workerId];
-                conn.socketIn.close();
-                conn.socketOut.close();
-                workers.remove(workerId);
-            }
+            if ((workerId in this.workers) == null)
+                return false;
         }
 
-        heraldLogger.info("Deregistered worker %s", workerId);
+        send(this.heraldTid, M_SendTaskRequest(workerId, chunkId, imageIdx));
+        return true;
     }
 
     HeraldMessage[] popMessages()
     {
+        // Flush all mailboxes into the globalInbox
+        this.collapseMailboxes();
+
         synchronized (inboxMutex)
         {
             auto messages = globalInbox.dup;
@@ -89,7 +96,8 @@ class ProcessHerald
         HeraldMessage[] batch;
 
         WorkerConnection[] workersCopy;
-        synchronized (workersMutex) {
+        synchronized (workersMutex)
+        {
             workersCopy = workers.values.array;
         }
 
@@ -115,48 +123,98 @@ class ProcessHerald
             this.globalInbox ~= msg;
         }
     }
-
-    void incrementWatchdog(uint workerId)
-    {
-        if (workerId in workers)
-        {
-            workers[workerId].watchdogTimeouts += 1;
-        }
-    }
-
-    void resetWatchdog(uint workerId)
-    {
-        if (workerId in workers)
-        {
-            workers[workerId].watchdogTimeouts = 0;
-        }
-    }
-
-    auto getWorkers()
-    {
-        return workers;
-    }
 }
 
 void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
 {
     bool spin = true;
     ProcessHerald herald = cast(ProcessHerald) sharedHerald;
-
     StopWatch sw = StopWatch(AutoStart.yes);
 
     while (spin)
     {
+        // --- 1. HANDLE INCOMING COMMANDS (Registration / Stop) ---
+        receiveTimeout(15.msecs,
+            (M_RegisterRequest req) {
+
+            auto socketOut = new Socket(SocketType.push);
+            socketOut.bind("tcp://127.0.0.1:*");
+            string outEP = cast(string) socketOut.lastEndpoint;
+
+            auto socketIn = new Socket(SocketType.pull);
+            socketIn.bind("tcp://127.0.0.1:*");
+            string inEP = cast(string) socketIn.lastEndpoint;
+
+            synchronized (herald.workersMutex)
+            {
+                herald.workers[req.workerId] = new WorkerConnection(
+                    req.workerId, socketIn, socketOut, herald.getHbInterval()
+                );
+            }
+
+            // Tell the main thread what the ports are
+            send(req.caller, M_RegisterResponse(inEP, outEP));
+            heraldLogger.infof("Herald Thread: Registered Worker %d", req.workerId);
+        },
+            (M_DeregisterRequest req) {
+
+            synchronized (herald.workersMutex)
+            {
+                auto pConn = req.workerId in herald.workers;
+                if (pConn)
+                {
+                    // Close sockets in the same thread that used them
+                    (*pConn).socketIn.close();
+                    (*pConn).socketOut.close();
+                    herald.workers.remove(req.workerId);
+                }
+            }
+            heraldLogger.infof("Herald Thread: Deregistered Worker %d", req.workerId);
+        },
+            (M_SendTaskRequest req) {
+
+            synchronized (herald.workersMutex)
+            {
+                auto pConn = req.workerId in herald.workers;
+                if (pConn)
+                {
+                    HeraldMessage msg = HeraldMessage();
+                    msg.workerId = req.workerId;
+                    msg.msgType = WorkerMessages.TaskStart;
+                    msg.payload = [
+                        cast(int) mode, cast(int) req.chunkId,
+                        cast(int) req.imageIdx
+                    ];
+
+                    string wireData = msg.encodeToString();
+
+                    bool ret = pConn.socketOut.trySend(wireData);
+                    if (!ret)
+                        heraldLogger.errorf("ZMQ Send Failed for Worker %d", req.workerId);
+                }
+            }
+        },
+            (string msg) {
+
+            if (msg == "STOP")
+                spin = false;
+        }
+        );
+
+        if (!spin)
+            break;
+
+        // Get a local snapshot of workers to minimize lock contention
         WorkerConnection[] workers;
         synchronized (herald.workersMutex)
         {
-            workers = herald.getWorkers().values.array;
+            workers = herald.workers.values.array;
         }
 
-        // --- SECTION A: SEND HEARTBEATS ---
+        // --- 2. SECTION A: SEND HEARTBEATS ---
         foreach (conn; workers)
         {
-            if (conn.sw.peek >= herald.hbInterval)
+            if (conn.sw.peek >= herald.getHbInterval())
             {
                 try
                 {
@@ -165,20 +223,20 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
                 }
                 catch (Exception e)
                 {
-                    heraldLogger.error("Failed to send heartbeat to worker %s: %s", conn.pid, e.msg);
+                    heraldLogger.errorf("Heartbeat Fail (Worker %d): %s", conn.pid, e.msg);
                 }
                 conn.sw.reset();
             }
         }
 
-        // --- SECTION B: RECEIVE MESSAGES AND RAISE WATCHDOG TIMEOUTS ---
+        // --- 3. SECTION B: RECEIVE MESSAGES & WATCHDOGS ---
         foreach (conn; workers)
         {
-            conn.recvAllMessages();
+            conn.recvAllMessages(); // This should populate conn.mailbox
 
-            if (conn.watchdogTimeouts >= 3)
+            if (conn.watchdogTimeouts >= 7)
             {
-                heraldLogger.critical("Worker %s timed out. Raising High-Priority Error.", conn.pid);
+                heraldLogger.criticalf("Worker %d Watchdog Timeout!", conn.pid);
 
                 HeraldMessage timeoutErr = HeraldMessage(
                     conn.pid,
@@ -186,23 +244,11 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
                     [WorkerErrorCodes.WatchdogTimeout]
                 );
 
-                // --- HIGH PRIORITY BYPASS ---
-                // Instead of conn.mailbox, we go straight to the global inbox
                 herald.pushPriorityInbox(timeoutErr);
                 conn.resetWatchdog();
             }
         }
-
-        if (sw.peek >= 400.msecs)
-        {
-            herald.collapseMailboxes();
-            sw.reset();
-        }
-
-        receiveTimeout(10.msecs,
-            (string msg) {
-            if (msg == "STOP")
-                spin = false;
-        });
     }
+
+    heraldLogger.infof("Herald Worker Thread exiting. Ran for %d secs", sw.peek().total!"seconds");
 }

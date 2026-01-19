@@ -15,12 +15,12 @@ void setTargetPath(string path)
     _targetPath = path;
 }
 
-enum TaskMode
+enum TaskMode : int
 {
-    MOCK,
-    ALIGN,
-    TEST,
-    TILING
+    MOCK = 0,
+    ALIGN = 1,
+    TEST = 2,
+    TILING = 3
 }
 
 __gshared TaskMode mode;

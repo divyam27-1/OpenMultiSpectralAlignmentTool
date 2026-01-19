@@ -17,6 +17,7 @@ class WorkerConnection
     int watchdogTimeouts = 0;
     StopWatch sw;
     DList!HeraldMessage mailbox;
+    bool born = false;
 
     this(ulong pid, Socket* si, Socket* so, const Duration inv)
     {
@@ -36,6 +37,7 @@ class WorkerConnection
     void incrementWatchdog()
     {
         this.watchdogTimeouts += 1;
+        this.sw.reset();
     }
 
     void recvAllMessages()
@@ -56,6 +58,13 @@ class WorkerConnection
                     HeraldMessage msg = msgStr.decodeFromString;
                     this.resetWatchdog();
 
+                    // It should register the first heartbeat so that Manager knows the process is alive
+                    if (msg.msgType == WorkerMessages.Heartbeat && !born) {
+                        this.mailbox.insertBack(msg);
+                        born = true;
+                        continue;
+                    }
+
                     switch (msg.msgType)
                     {
                     case WorkerMessages.Heartbeat:
@@ -70,9 +79,7 @@ class WorkerConnection
                     this.mailbox.insertBack(msg);
                 }
                 else
-                {
                     hasMessage = false;
-                }
             }
             catch (Exception e)
             {
@@ -161,14 +168,14 @@ enum WorkerMessages : int
     WorkerFlush = 3,
     WorkerStop = 4,
     WorkerError = 5,
-    MessageInvalid = 400,
+    MessageInvalid = 400
 }
 
 enum TaskFinishCodes : int
 {
     Success = 0,
     Failed = 1,
-    RetryRequested = 2,
+    RetryRequested = 2
 }
 
 enum WorkerErrorCodes : int
@@ -177,4 +184,10 @@ enum WorkerErrorCodes : int
     InitializationFailed = 1,
     RuntimeFailure = 2,
     WatchdogTimeout = 3,
+    UnknownWorkflow = 4
 }
+
+struct M_RegisterRequest { uint workerId; Tid caller; }
+struct M_RegisterResponse { string inEndpoint; string outEndpoint; }
+struct M_DeregisterRequest { uint workerId; }
+struct M_SendTaskRequest { uint workerId; uint chunkId; uint imageIdx; }

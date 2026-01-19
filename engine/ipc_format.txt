@@ -1,1 +1,12 @@
+For stateless worker
 PYTHONPATH  worker.py   workflow    plan_path   chunk_idx   [rest of args are positionless]
+
+For persistent worker
+PYTHONPATH  persistent_worker.py    plan_path   [rest of args are passed by ZMQ]
+- Payloads:
+    1) Heartbeat: No Payload
+    2) TaskStart: [workflow, chunk_idx, image_idx]
+    3) TaskFinish: [TaskFinishCodes], Upstream-only message
+    4) WorkerFlush: No Payload
+    5) WorkerStop: No Payload
+    6) WorkerError: [WorkerErrorCodes]
