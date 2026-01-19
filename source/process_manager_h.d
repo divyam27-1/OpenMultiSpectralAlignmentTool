@@ -32,7 +32,7 @@ struct ProcessControlBlock
     // Current Work Context (Null if IDLE)
     uint activeChunkId;
     uint activeImageIdx = uint.max;
-    StopWatch taskTimer = StopWatch(AutoStart.yes);
+    StopWatch taskTimer;
 }
 
 enum TaskState

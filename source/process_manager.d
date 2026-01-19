@@ -15,6 +15,7 @@ import std.exception : enforce;
 import std.conv;
 import std.array;
 import std.container.dlist;
+import core.thread.fiber;
 
 import process_manager_h;
 import process_monitor_h;
@@ -27,13 +28,16 @@ import loggers : managerLogger;
 
 class ProcessManager
 {
+    bool busy = false;
+    private Fiber managerFiber;
+
     private ProcessRunner runner;
     private ProcessMonitor monitor;
     private ProcessHerald herald;
 
-    private ProcessControlBlock[pid] pcbMap;
-    private ProcessMonitorReport[pid] monitorMap;
-    private ChunkControlBLock currentChunk;
+    private ProcessControlBlock[uint] pcbMap;
+    private ProcessMonitorReport[uint] monitorMap;
+    private ChunkControlBlock currentChunk;
 
     private immutable size_t maxMemory;
     private immutable size_t physicalCoreCount;
@@ -73,8 +77,19 @@ class ProcessManager
         this.updateMonitor();
     }
 
+    void putChunk(uint chunkId, uint numImages)
+    {
+        this.busy = true;
+
+        managerFiber = new Fiber({
+            this.processChunk(chunkId, numImages);
+            this.busy = false;
+        },
+            64 * 1024); // 64 kB stack
+    }
+
     // TODO: add functionality to kill or throttle idle workers if cpu is being over utilized
-    void processChunk(uint chunkId, uint numImages)
+    private void processChunk(uint chunkId, uint numImages)
     {
         this.currentChunk = ChunkControlBlock(chunkId, numImages, chunkSize); // I made a constructor for the struct that self populates the Dynamic Array 
         managerLogger.infof("Starting Processing: Chunk %d with %d images", chunkId, numImages);
@@ -92,7 +107,7 @@ class ProcessManager
             if (currentChunk.hasUnassignedWork() && !hasIdleWorkers() && canSpawn())
                 spawnNewWorker();
 
-            Thread.sleep(50.msecs);
+            Fiber.yield();
         }
 
         managerLogger.infof("Chunk %d processing cycle finished.", chunkId);

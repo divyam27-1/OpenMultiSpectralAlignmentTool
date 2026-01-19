@@ -50,7 +50,7 @@ class ProcessHerald
 
     bool unreserveEndpoints(ZMQEndpoints endpoints)
     {
-        send(this.heraldTid, M_UnreserveEndpoints(endpoints));
+        send(this.heraldTid, M_UnreserveEndpoints(cast(immutable) endpoints));
 
         bool ret = receiveOnly!M_RegisterResponse.i;
         return ret;
@@ -58,7 +58,7 @@ class ProcessHerald
 
     bool registerWorker(uint workerId, ZMQEndpoints endpoints)
     {
-        send(this.heraldTid, M_RegisterRequest(workerId, endpoints));
+        send(this.heraldTid, M_RegisterRequest(workerId, cast(immutable) endpoints));
         bool ret = receiveOnly!M_RegisterResponse.i;
 
         return ret;
@@ -157,7 +157,7 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
 
             ZMQEndpoints endpoints = ZMQEndpoints(inEP, outEP, socketIn, socketOut);
 
-            send(parentTid, endpoints);
+            send(parentTid, cast(immutable) endpoints);
         },
             (M_UnreserveEndpoints req) {
 
