@@ -42,10 +42,18 @@ class ProcessHerald
 
     ZMQEndpoints reserveEndpoints()
     {
-        send(this.heraldTid, M_ReserveEndpoints);
+        send(this.heraldTid, M_ReserveEndpoints(true));
 
         ZMQEndpoints endpoints = receiveOnly!ZMQEndpoints;
         return endpoints;
+    }
+
+    bool unreserveEndpoints(ZMQEndpoints endpoints)
+    {
+        send(this.heraldTid, M_UnreserveEndpoints(endpoints));
+
+        bool ret = receiveOnly!M_RegisterResponse.i;
+        return ret;
     }
 
     bool registerWorker(uint workerId, ZMQEndpoints endpoints)
@@ -137,6 +145,28 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
     {
         // --- 1. HANDLE INCOMING COMMANDS (Registration / Stop) ---
         receiveTimeout(15.msecs,
+            (M_ReserveEndpoints req) {
+
+            Socket* socketOut = new Socket(SocketType.push);
+            socketOut.bind("tcp://127.0.0.1:*");
+            string outEP = cast(string) socketOut.lastEndpoint;
+
+            Socket* socketIn = new Socket(SocketType.pull);
+            socketIn.bind("tcp://127.0.0.1:*");
+            string inEP = cast(string) socketIn.lastEndpoint;
+
+            ZMQEndpoints endpoints = ZMQEndpoints(inEP, outEP, socketIn, socketOut);
+
+            send(parentTid, endpoints);
+        },
+            (M_UnreserveEndpoints req) {
+
+            ZMQEndpoints ep = req.endpoints;
+            ep.socketIn.close();
+            ep.socketOut.close();
+
+            send(parentTid, M_RegisterResponse(true));
+        },
             (M_RegisterRequest req) {
 
             synchronized (herald.workersMutex)
@@ -168,7 +198,7 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
                     herald.workers.remove(req.workerId);
                 }
             }
-            
+
             heraldLogger.infof("Herald Thread: Deregistered Worker %d", req.workerId);
         },
             (M_SendTaskRequest req) {
@@ -194,20 +224,6 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
                         heraldLogger.errorf("ZMQ Send Failed for Worker %d", req.workerId);
                 }
             }
-        },
-            (M_ReserveEndpoints) {
-
-            Socket* socketOut = new Socket(SocketType.push);
-            socketOut.bind("tcp://127.0.0.1:*");
-            string outEP = cast(string) socketOut.lastEndpoint;
-
-            Socket* socketIn = new Socket(SocketType.pull);
-            socketIn.bind("tcp://127.0.0.1:*");
-            string inEP = cast(string) socketIn.lastEndpoint;
-
-            ZMQEndpoints endpoints = ZMQEndpoints(inEP, outEP, socketIn, socketOut);
-
-            send(parentTid, endpoints);
         },
             (string msg) {
 

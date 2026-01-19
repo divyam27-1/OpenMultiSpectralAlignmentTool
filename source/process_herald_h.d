@@ -194,8 +194,9 @@ enum WorkerErrorCodes : int
     UnknownWorkflow = 4
 }
 
+struct M_ReserveEndpoints { bool i; }
+struct M_UnreserveEndpoints { ZMQEndpoints endpoints; }
 struct M_RegisterRequest { uint workerId; ZMQEndpoints endpoints; }
 struct M_RegisterResponse { bool i; }
 struct M_DeregisterRequest { uint workerId; }
 struct M_SendTaskRequest { uint workerId; uint chunkId; uint imageIdx; }
-struct M_ReserveEndpoints { bool i; }
