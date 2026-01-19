@@ -7,26 +7,33 @@ import std.process;
 import std.algorithm : map;
 import std.algorithm.comparison : max;
 import std.datetime : Clock;
+import std.datetime.stopwatch;
 import std.path : buildPath, absolutePath;
 import std.file : thisExePath, exists;
 import std.path : dirName;
 import std.exception : enforce;
 import std.conv;
 import std.array;
+import std.container.dlist;
 
 import process_manager_h;
 import process_monitor_h;
+import process_herald_h;
 import process_monitor;
+import process_herald;
 import config;
+import appstate : mode;
 import loggers : managerLogger;
 
 class ProcessManager
 {
     private ProcessRunner runner;
     private ProcessMonitor monitor;
+    private ProcessHerald herald;
 
-    private ProcessControlBlock[Pid] pcbMap;
-    private ProcessMonitorReport[Pid] monitorMap;
+    private ProcessControlBlock[pid] pcbMap;
+    private ProcessMonitorReport[pid] monitorMap;
+    private ChunkControlBLock currentChunk;
 
     private immutable size_t maxMemory;
     private immutable size_t physicalCoreCount;
@@ -46,7 +53,10 @@ class ProcessManager
     {
         this.runner = runner;
         this.monitor = new ProcessMonitor(new WindowsMemoryFetcher());
+        this.herald = new ProcessHerald();
+
         this.monitor.refresh();
+        this.currentChunk = ChunkControlBlock();
 
         auto cfg = loadConfig(buildPath(thisExePath().dirName, "omspec.cfg").absolutePath());
         this.maxMemory = cfg.max_memory_mb * 1024 * 1024;
@@ -63,90 +73,292 @@ class ProcessManager
         this.updateMonitor();
     }
 
-    public SpawnVerdict trySpawn(size_t chunkId, size_t chunkSize)
+    // TODO: add functionality to kill or throttle idle workers if cpu is being over utilized
+    void processChunk(uint chunkId, uint numImages)
     {
-        this.updateMonitor();
+        this.currentChunk = ChunkControlBlock(chunkId, numImages, chunkSize); // I made a constructor for the struct that self populates the Dynamic Array 
+        managerLogger.infof("Starting Processing: Chunk %d with %d images", chunkId, numImages);
 
-        SpawnVerdict verdict = this.canSpawn(chunkId, chunkSize);
-        if (verdict != SpawnVerdict.OK)
-            return verdict;
-
-        Pid pid = this.runner.spawn_worker(chunkId);
-        if (pid is Pid.init)
+        // Execution Loop
+        while (!currentChunk.isComplete())
         {
-            managerLogger.errorf("OS failed to spawn worker for Chunk %d", chunkId);
-            return SpawnVerdict.SPAWN_FAILURE;
+            HeraldMessage[] messages = herald.popMessages();
+            foreach (msg; messages)
+                handleWorkerResponse(msg);
+
+            reapWorkers();
+            dispatchTasksToIdleWorkers();
+
+            if (currentChunk.hasUnassignedWork() && !hasIdleWorkers() && canSpawn())
+                spawnNewWorker();
+
+            Thread.sleep(50.msecs);
         }
 
-        ProcessControlBlock pcb;
-        pcb.pid = pid;
-        pcb.chunk_id = cast(uint) chunkId;
-        pcb.start_time = Clock.currTime();
-        pcb.attempt = 1;
-        pcb.estimated_memory = chunkSize;
-
-        this.pcbMap[pid] = pcb;
-
-        this.currentMemoryUsage += pcb.estimated_memory;
-
-        managerLogger.infof("Spawned Worker PID %d (Chunk %d). Memory: %d MB",
-            pid.processID, chunkId, pcb.estimated_memory / (1024 * 1024));
-
-        return SpawnVerdict.OK;
+        managerLogger.infof("Chunk %d processing cycle finished.", chunkId);
     }
 
-    public SpawnVerdict canSpawn(size_t chunkId, size_t expectedChunkSize)
+    private void dispatchTasksToIdleWorkers()
     {
-        import std.math : isNaN;
-        import std.format : format;
-
-        // 1. Theoretical Check
-        if (currentMemoryUsage + expectedChunkSize > maxMemory)
+        foreach (workerId, ref pcb; pcbMap)
         {
-            managerLogger.infof("[CAN_SPAWN] Chunk %d: FAIL (Theoretical) | Req: %dMB + Pool: %dMB > Max: %dMB",
-                chunkId, expectedChunkSize / 1024 / 1024, currentMemoryUsage / 1024 / 1024, maxMemory / 1024 / 1024);
-            return SpawnVerdict.LIMIT_REACHED_MEM;
+            if (pcb.state != WorkerState.IDLE)
+                continue;
+
+            uint imgIdx = currentChunk.findNextPendingImage();
+            if (imgIdx == uint.max)
+                break; // No more work to give for now
+
+            // Update PCB
+            pcb.state = WorkerState.BUSY;
+            pcb.activeImageIdx = imgIdx;
+            pcb.taskTimer.reset();
+
+            // Update CCB
+            currentChunk.taskStates[imgIdx] = TaskState.INPROGRESS;
+
+            // Send command to Herald
+            herald.sendTask(workerId, currentChunk.chunkId, imgIdx);
+
+            managerLogger.infof("Assigned: Worker %d -> Chunk %d, Image %d",
+                workerId, currentChunk.chunkId, imgIdx);
+        }
+    }
+
+    private void handleWorkerResponse(HeraldMessage msg)
+    {
+        ProcessControlBlock* pcb = msg.workerId in pcbMap;
+        if (!pcb)
+        {
+            managerLogger.errorf("Received message for unknown PID %d: %s", msg.workerId, msg
+                    .msgType);
+            return;
         }
 
-        // 2. RAM Check
-        size_t requiredHeadroom = max(memoryHeadroom, memoryHeadroom / 2 + expectedChunkSize);
-        if (availableSystemRAM < requiredHeadroom)
+        switch (msg.msgType)
         {
-            managerLogger.infof("[CAN_SPAWN] Chunk %d: FAIL (Sys RAM) | Avl: %dMB < ReqHeadroom: %dMB",
-                chunkId, availableSystemRAM / 1024 / 1024, requiredHeadroom / 1024 / 1024);
+        case WorkerMessages.Heartbeat:
+            if (pcb.state == WorkerState.SPAWNING)
+            {
+                pcb.state = WorkerState.IDLE;
+                pcb.taskTimer.reset(); // Stop the spawning watchdog timer
+                managerLogger.infof("Worker %d handshake successful. Ready for tasks.", msg
+                        .workerId);
+            }
+            break;
+
+        case WorkerMessages.TaskFinish:
+            const uint imgIdx = pcb.activeImageIdx;
+            if (imgIdx == uint.max)
+            {
+                managerLogger.errorf("Worker %d finished, but activeImageIdx was null.", msg
+                        .workerId);
+                pcb.state = WorkerState.IDLE;
+                return;
+            }
+
+            auto status = cast(TaskFinishCodes) msg.payload[0];
+            processTaskFinish(pcb, imgIdx, status);
+
+            pcb.state = WorkerState.IDLE;
+            pcb.activeImageIdx = uint.max;
+            pcb.taskTimer.stop();
+            break;
+
+        case WorkerMessages.WorkerError:
+        case WorkerMessages.MessageInvalid:
+            managerLogger.errorf("Worker %d critical failure: %s", msg.workerId, msg.msgType);
+            pcb.state = WorkerState.UNRESPONSIVE;
+            break;
+
+        case WorkerMessages.WorkerStop:
+            pcb.state = WorkerState.KILLED;
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    private void processTaskFinish(ProcessControlBlock* pcb, uint imgIdx, TaskFinishCodes status)
+    {
+        switch (status)
+        {
+        case TaskFinishCodes.Success:
+            currentChunk.taskStates[imgIdx] = TaskState.COMPLETED;
+            break;
+
+        case TaskFinishCodes.RetryRequested:
+            if (currentChunk.retryCount[imgIdx] < 3)
+            {
+                currentChunk.retryCount[imgIdx]++;
+                currentChunk.taskStates[imgIdx] = TaskState.PENDING;
+                managerLogger.warnf("Task %d:%d retry %d/3", currentChunk.chunkId, imgIdx, currentChunk
+                        .retryCount[imgIdx]);
+            }
+            else
+            {
+                currentChunk.taskStates[imgIdx] = TaskState.FAILED;
+                managerLogger.errorf("Task %d:%d failed after max retries", currentChunk.chunkId, imgIdx);
+            }
+            break;
+
+        default:
+            currentChunk.taskStates[imgIdx] = TaskState.FAILED;
+            break;
+        }
+    }
+
+    private void reapWorkers()
+    {
+        auto activePids = pcbMap.keys;
+
+        foreach (pid; activePids)
+        {
+            auto pcb = &pcbMap[pid];
+            bool needsCleanup = false;
+
+            auto result = tryWait(pcb.pid);
+            if (result.terminated)
+            {
+                managerLogger.criticalf("Worker %d exited unexpectedly (OS Status: %d)", pid, result
+                        .status);
+                needsCleanup = true;
+            }
+            else if (pcb.state == WorkerState.SPAWNING && pcb.taskTimer.peek().total!"seconds" > 30)
+            {
+                managerLogger.errorf("Worker %d timed out during spawn handshake. Killing.", pid);
+                kill(pcb.pid);
+                needsCleanup = true;
+            }
+            else if (pcb.state == WorkerState.UNRESPONSIVE || pcb.state == WorkerState.KILLED)
+            {
+                kill(pcb.pid);
+                needsCleanup = true;
+            }
+
+            if (needsCleanup)
+                cleanupWorker(pid);
+        }
+    }
+
+    private void cleanupWorker(uint pid)
+    {
+        if (auto pPcb = pid in pcbMap)
+        {
+            if (pPcb.activeImageIdx != uint.max)
+            {
+                currentChunk.taskStates[pPcb.activeImageIdx] = TaskState.PENDING;
+                managerLogger.infof("Rescued Image %d from dead Worker %d", pPcb.activeImageIdx, pid);
+            }
+
+            herald.deregisterWorker(pid);
+            pcbMap.remove(pid);
+            monitorMap.remove(pid);
+        }
+    }
+
+    private bool hasIdleWorkers()
+    {
+        foreach (pid, ref pcb; pcbMap)
+            if (pcb.state == WorkerState.IDLE)
+                return true;
+
+        return false;
+    }
+
+    public void spawnNewWorker()
+    {
+        ZMQEndpoints endpoints = herald.reserveEndpoints();
+
+        try
+        {
+            Pid pid = this.runner.spawn_worker(
+                currentChunk.chunkId,
+                endpoints
+            );
+
+            if (pid is Pid.init)
+            {
+                managerLogger.errorf("OS failed to spawn worker for Chunk %d", currentChunk.chunkId);
+                herald.unreserveEndpoints(endpoints);
+                return;
+            }
+
+            uint workerPid = cast(uint) pid.processID;
+            bool registered = herald.registerWorker(workerPid, endpoints);
+
+            if (!registered)
+            {
+                managerLogger.errorf("Herald failed to register Worker %d", workerPid);
+                kill(pid);
+                return;
+            }
+
+            ProcessControlBlock pcb;
+            pcb.pid = pid;
+            pcb.state = WorkerState.SPAWNING;
+            pcb.activeChunkId = currentChunk.chunkId;
+            pcb.activeImageIdx = uint.max;
+            pcb.taskTimer = StopWatch(AutoStart.yes);
+            pcb.lastMemoryUsage = 200 * 1024 * 1024; // 200 MB which is approx amount of barebones python runtime
+
+            this.pcbMap[workerPid] = pcb;
+
+            managerLogger.infof("Worker %d spawned. ZMQ: IN=%s OUT=%s",
+                workerPid, endpoints.inEndpoint, endpoints.outEndpoint);
+        }
+        catch (Exception e)
+        {
+            managerLogger.errorf("Critical failure spawning worker: %s", e.msg);
+            herald.unreserveEndpoints(endpoints);
+        }
+
+        this.updateMonitor();
+        this.monitor.updateTracking(pcbMap.keys.array);
+    }
+
+    public SpawnVerdict canSpawn(size_t chunkId)
+    {
+        import std.math : isNaN;
+
+        // 1. Hard Core Limit
+        if (this.getActiveProcessCount() + 1 > this.effectiveCoreCount)
+        {
+            managerLogger.infof("[CAN_SPAWN] Chunk %d: FAIL (Core Limit) | Count: %d >= Cores: %.1f",
+                chunkId, this.getActiveProcessCount(), effectiveCoreCount);
+            return SpawnVerdict.SYSTEM_BUSY_CPU;
+        }
+
+        // 2. RAM Headroom Check
+        if (availableSystemRAM < memoryHeadroom)
+        {
+            managerLogger.infof("[CAN_SPAWN] Chunk %d: FAIL (RAM Headroom) | Avl: %dMB < Headroom: %dMB",
+                chunkId, availableSystemRAM / 1024 / 1024, memoryHeadroom / 1024 / 1024);
             return SpawnVerdict.SYSTEM_BUSY_RAM;
         }
 
-        // 3. CPU Check Logic
-		if (this.getActiveProcessCount() + 1 > this.effectiveCoreCount) 
-		{
-			managerLogger.infof(
-				"[CAN_SPAWN] Chunk %d: FAIL (CPU) | RunningProcesses: %.1f vs Effective Cores: %.1f",
-			    chunkId, this.getActiveProcessCount(), effectiveCoreCount);
-			          
-			return SpawnVerdict.SYSTEM_BUSY_CPU;
-		}
-        
+        // 3. CPU Load Logic
         double totalCpuUsage = 0;
         int warmingUp = 0;
+
         foreach (pid; pcbMap.keys)
         {
             auto report = monitorMap.get(pid, ProcessMonitorReport(0, 0, double.nan));
             totalCpuUsage += isNaN(report.cpu) ? 95.0 : report.cpu;
-            if (report.cpu < 25.0)
+            if (report.cpu < 10.0)
                 warmingUp++;
         }
 
-        double effectiveCoresUsed = totalCpuUsage / 100.0 + warmingUp * 0.95;
-        if (effectiveCoresUsed + 1 > effectiveCoreCount)
+        double effectiveCoresUsed = (totalCpuUsage / 100.0) + (warmingUp * 0.5);
+        if (effectiveCoresUsed + 1.0 > effectiveCoreCount)
         {
-            managerLogger.infof(
-                "[CAN_SPAWN] Chunk %d: FAIL (CPU) | UsedCores: %.1f vs Effective Cores: %.1f (Warm: %d)",
-                chunkId, effectiveCoresUsed, effectiveCoreCount, warmingUp);
+            managerLogger.infof("[CAN_SPAWN] Chunk %d: FAIL (CPU Load) | EffectiveUsed: %.2f / %.1f",
+                chunkId, effectiveCoresUsed, effectiveCoreCount);
             return SpawnVerdict.SYSTEM_BUSY_CPU;
         }
 
-        // 3.5 If CPU check has passed, wait for it to stabilize
+        // 4. Stabilization Check
         if (cpuCheckStreak++ < cpuCheckStreakThreshold)
         {
             managerLogger.infof(
@@ -155,66 +367,26 @@ class ProcessManager
             return SpawnVerdict.SYSTEM_BUSY_CPU;
         }
 
-        // 4. Success Log
-        managerLogger.infof("[CAN_SPAWN] Chunk %d: OK | Pool: %dMB | AvlRAM: %dMB | Cores: %.1f/%.1f",
-            chunkId, currentMemoryUsage / 1024 / 1024, availableSystemRAM / 1024 / 1024,
-            effectiveCoresUsed, effectiveCoreCount);
+        managerLogger.infof("[CAN_SPAWN] Chunk %d: OK | AvlRAM: %dMB | Cores: %.1f/%.1f",
+            chunkId, availableSystemRAM / 1024 / 1024, effectiveCoresUsed, effectiveCoreCount);
 
         cpuCheckStreak = 0;
         return SpawnVerdict.OK;
     }
 
-    public ChunkGraveyard reap()
-    {
-        ChunkGraveyard graveyard;
-
-        this.updateMonitor();
-
-        foreach (Pid pid; this.pcbMap.keys.dup)
-        {
-            auto pcb = this.pcbMap[pid];
-            auto status = tryWait(pid);
-            if (status.terminated)
-            {
-                // For reaping we take away the real memory usage, for spawning we take an estimate
-                // currentMemoryUsage will be synced anyways with the real sum of memory usages in the updateMonitor() function
-                // Fallback logic to prevent crash on missing telemetry
-                size_t lastKnownMem = this.monitorMap.get(pid, ProcessMonitorReport.init).memory;
-                this.currentMemoryUsage -= (lastKnownMem > 0) ? lastKnownMem : pcb.estimated_memory;
-
-                if (status.status == 0)
-                    graveyard.completed ~= cast(uint) pcb.chunk_id;
-                else if (status.status == 2)
-                {
-                    if (pcb.attempt++ > this.maxRetries)
-                        graveyard.failed ~= cast(uint) pcb.chunk_id;
-                    else
-                        graveyard.retries ~= cast(uint) pcb.chunk_id;
-                }
-                else
-                    graveyard.failed ~= cast(uint) pcb.chunk_id;
-
-                this.pcbMap.remove(pid);
-                this.monitorMap.remove(pid);
-            }
-        }
-
-        this.monitor.updateTracking(this.pcbMap.keys.map!(p => cast(uint) p.processID).array);
-        return graveyard;
-    }
-
     private void updateMonitor()
     {
         this.monitor.refresh();
+        this.monitorMap.clear();
 
         size_t total = 0;
         foreach (pid; this.pcbMap.keys)
         {
-            ProcessMonitorReport report = this.monitor.getUsage(cast(uint) pid.processID);
+            ProcessMonitorReport report = this.monitor.getUsage(cast(uint) pid);
             this.monitorMap[pid] = report;
 
             // If RAM is 0, it means the monitor hasn't caught the process yet
-            total += report.memory > 0 ? report.memory : this.pcbMap[pid].estimated_memory;
+            total += report.memory > 0 ? report.memory : this.pcbMap[pid].lastMemoryUsage;
         }
 
         this.availableSystemRAM = this.monitor.getAvailableSystemRAM();
@@ -228,15 +400,15 @@ class ProcessManager
 
     public void terminateAll()
     {
-        foreach (Pid pid; pcbMap.keys)
+        foreach (pid; pcbMap.keys)
         {
             try
             {
                 kill(pid);
-                managerLogger.infof("Forced to kill process %d", pid.processID);
+                managerLogger.infof("Forced to kill process %d", pid);
             }
             catch (Exception e)
-                managerLogger.errorf("Failed to kill process %d: %s", pid.processID, e.msg);
+                managerLogger.errorf("Failed to kill process %d: %s", pid, e.msg);
         }
 
         this.pcbMap.clear();
@@ -270,8 +442,8 @@ public class ProcessRunner
         this.pythonPath = pythonPath;
         this.mode = mode;
         this.planPath = planPath;
-        
-        this.workerEnv = environment.toAA(); 
+
+        this.workerEnv = environment.toAA();
         this.workerEnv["OMP_NUM_THREADS"] = "1";
         this.workerEnv["MKL_NUM_THREADS"] = "1";
         this.workerEnv["OPENBLAS_NUM_THREADS"] = "1";
