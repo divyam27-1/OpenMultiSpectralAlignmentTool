@@ -158,6 +158,13 @@ HeraldMessage decodeFromString(string jsonStr)
     return completion && 0b11 ? msg : HeraldMessage(WorkerMessages.MessageInvalid);
 }
 
+struct ZMQEndpoints {
+    string inEndpoint;
+    string outEndpoint;
+    Socket* socketIn;
+    Socket* socketOut;
+}
+
 // If a client receives a messsage of this type, it should reason it as a command
 // If server receives a message of this type, it should reason it as a completion of said command
 enum WorkerMessages : int
@@ -187,7 +194,8 @@ enum WorkerErrorCodes : int
     UnknownWorkflow = 4
 }
 
-struct M_RegisterRequest { uint workerId; Tid caller; }
-struct M_RegisterResponse { string inEndpoint; string outEndpoint; }
+struct M_RegisterRequest { uint workerId; ZMQEndpoints endpoints; }
+struct M_RegisterResponse { bool i; }
 struct M_DeregisterRequest { uint workerId; }
 struct M_SendTaskRequest { uint workerId; uint chunkId; uint imageIdx; }
+struct M_ReserveEndpoints { bool i; }
