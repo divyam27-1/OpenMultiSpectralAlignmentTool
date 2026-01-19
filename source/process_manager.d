@@ -53,6 +53,8 @@ class ProcessManager
     private int cpuCheckStreak = 0;
     private const int cpuCheckStreakThreshold = 5;
 
+    private uint completedTasks = 0, failedTasks = 0;
+
     this(ProcessRunner runner)
     {
         this.runner = runner;
@@ -82,16 +84,32 @@ class ProcessManager
         this.busy = true;
 
         managerFiber = new Fiber({
-            this.processChunk(chunkId, numImages);
-            this.busy = false;
-        },
-            64 * 1024); // 64 kB stack
+            try
+            {
+                this.processChunk(chunkId, numImages);
+            }
+            catch (Exception e)
+            {
+                managerLogger.errorf("Critical Manager Error: %s", e.msg);
+                this.failedTasks += numImages;
+            }
+            finally
+            {
+                this.busy = false;
+            }
+        }, 64 * 1024);
+    }
+
+    void processTick()
+    {
+        if (this.managerFiber && this.managerFiber.state != Fiber.State.TERM)
+            this.managerFiber.call();
     }
 
     // TODO: add functionality to kill or throttle idle workers if cpu is being over utilized
     private void processChunk(uint chunkId, uint numImages)
     {
-        this.currentChunk = ChunkControlBlock(chunkId, numImages, chunkSize); // I made a constructor for the struct that self populates the Dynamic Array 
+        this.currentChunk = ChunkControlBlock(chunkId, numImages); // I made a constructor for the struct that self populates the Dynamic Array 
         managerLogger.infof("Starting Processing: Chunk %d with %d images", chunkId, numImages);
 
         // Execution Loop
@@ -104,7 +122,7 @@ class ProcessManager
             reapWorkers();
             dispatchTasksToIdleWorkers();
 
-            if (currentChunk.hasUnassignedWork() && !hasIdleWorkers() && canSpawn())
+            if (currentChunk.hasUnassignedWork() && !hasIdleWorkers() && canSpawn(chunkId))
                 spawnNewWorker();
 
             Fiber.yield();
@@ -142,7 +160,7 @@ class ProcessManager
 
     private void handleWorkerResponse(HeraldMessage msg)
     {
-        ProcessControlBlock* pcb = msg.workerId in pcbMap;
+        ProcessControlBlock* pcb = (cast(uint) msg.workerId) in pcbMap;
         if (!pcb)
         {
             managerLogger.errorf("Received message for unknown PID %d: %s", msg.workerId, msg
@@ -201,25 +219,27 @@ class ProcessManager
         {
         case TaskFinishCodes.Success:
             currentChunk.taskStates[imgIdx] = TaskState.COMPLETED;
+            this.completedTasks++;
             break;
 
         case TaskFinishCodes.RetryRequested:
-            if (currentChunk.retryCount[imgIdx] < 3)
-            {
-                currentChunk.retryCount[imgIdx]++;
-                currentChunk.taskStates[imgIdx] = TaskState.PENDING;
-                managerLogger.warnf("Task %d:%d retry %d/3", currentChunk.chunkId, imgIdx, currentChunk
-                        .retryCount[imgIdx]);
-            }
-            else
+            if (currentChunk.retryCount[imgIdx] > 3)
             {
                 currentChunk.taskStates[imgIdx] = TaskState.FAILED;
+                this.failedTasks++;
                 managerLogger.errorf("Task %d:%d failed after max retries", currentChunk.chunkId, imgIdx);
+                break;
             }
+            currentChunk.retryCount[imgIdx]++;
+            currentChunk.taskStates[imgIdx] = TaskState.PENDING;
+            managerLogger.warningf("Task %d:%d retry %d/3",
+                currentChunk.chunkId, imgIdx, currentChunk.retryCount[imgIdx]);
+
             break;
 
         default:
             currentChunk.taskStates[imgIdx] = TaskState.FAILED;
+            this.failedTasks++;
             break;
         }
     }
@@ -288,10 +308,7 @@ class ProcessManager
 
         try
         {
-            Pid pid = this.runner.spawn_worker(
-                currentChunk.chunkId,
-                endpoints
-            );
+            Pid pid = this.runner.spawn_worker(endpoints);
 
             if (pid is Pid.init)
             {
@@ -419,7 +436,7 @@ class ProcessManager
         {
             try
             {
-                kill(pid);
+                kill(pcbMap[pid].pid);
                 managerLogger.infof("Forced to kill process %d", pid);
             }
             catch (Exception e)
@@ -438,76 +455,100 @@ class ProcessManager
     {
         return [this.currentMemoryUsage, this.availableSystemRAM];
     }
+
+    public int[3] getProgressStats()
+    {
+        return [
+            cast(int) this.completedTasks, cast(int) pcbMap.length,
+            cast(int) this.failedTasks
+        ];
+    }
 }
 
 public class ProcessRunner
 {
+    import std.process;
+    import std.path;
+    import std.file;
+    import std.conv : to;
+    import std.exception : enforce;
     import appstate;
 
     private string pythonPath;
     private string scriptPath;
-    private TaskMode mode;
     private string workflow;
     private string planPath;
-
-    string[string] workerEnv;
+    private string[string] baseEnv;
 
     this(string pythonPath, string scriptName, TaskMode mode, string planPath)
     {
         this.pythonPath = pythonPath;
-        this.mode = mode;
-        this.planPath = planPath;
+        this.planPath = planPath.absolutePath();
 
-        this.workerEnv = environment.toAA();
-        this.workerEnv["OMP_NUM_THREADS"] = "1";
-        this.workerEnv["MKL_NUM_THREADS"] = "1";
-        this.workerEnv["OPENBLAS_NUM_THREADS"] = "1";
-        this.workerEnv["VECLIB_MAXIMUM_THREADS"] = "1";
-        this.workerEnv["OPENCV_FOR_THREADS_NUM"] = "1";
-
-        // Resolve the workflow string once at instantiation
-        this.workflow = () {
-            final switch (mode)
-            {
-            case TaskMode.ALIGN:
-                return "ALIGN";
-            case TaskMode.TEST:
-                return "TEST";
-            case TaskMode.TILING:
-                return "TILING";
-            case TaskMode.MOCK:
-                return "MOCK";
-            }
-        }();
-
-        managerLogger.infof("Python interpreter set to: %s", pythonPath);
+        final switch (mode)
+        {
+        case TaskMode.ALIGN:
+            this.workflow = "ALIGN";
+            break;
+        case TaskMode.TEST:
+            this.workflow = "TEST";
+            break;
+        case TaskMode.TILING:
+            this.workflow = "TILING";
+            break;
+        case TaskMode.MOCK:
+            this.workflow = "MOCK";
+            break;
+        }
 
         this.scriptPath = buildPath(thisExePath().dirName(), "..", "engine", scriptName)
             .absolutePath();
+
         enforce(this.scriptPath.exists,
             "CRITICAL: Engine script missing at " ~ this.scriptPath);
 
-        managerLogger.infof("ProcessRunner initialized for %s mode.", this.workflow);
+        this.baseEnv = environment.toAA();
+        this.baseEnv["OMP_NUM_THREADS"] = "1";
+        this.baseEnv["MKL_NUM_THREADS"] = "1";
+        this.baseEnv["OPENBLAS_NUM_THREADS"] = "1";
+        this.baseEnv["VECLIB_MAXIMUM_THREADS"] = "1";
+        this.baseEnv["OPENCV_FOR_THREADS_NUM"] = "1";
+
+        this.baseEnv["OMSPEC_WORKFLOW"] = this.workflow;
+        this.baseEnv["OMSPEC_PLANPATH"] = this.planPath;
+        this.baseEnv["OMSPEC_LOGDIR"] = buildPath(planPath.dirName(), "log").absolutePath();
+
+        if (!this.baseEnv["OMSPEC_LOGDIR"].exists)
+            mkdirRecurse(this.baseEnv["OMSPEC_LOGDIR"]);
+
+        managerLogger.infof("ProcessRunner initialized for %s. Script: %s",
+            this.workflow, this.scriptPath);
     }
 
-    public Pid spawn_worker(size_t chunk_id)
+    public Pid spawn_worker(ZMQEndpoints endpoints)
     {
         try
         {
-            managerLogger.infof("[%s] Spawning process for Chunk %d", this.workflow, chunk_id);
+            string[string] workerEnv = this.baseEnv.dup;
 
-            return spawnProcess([
-                pythonPath,
-                scriptPath,
+            workerEnv["OMSPEC_INPUT_STREAM"] = endpoints.inEndpoint; // Where server PULLS
+            workerEnv["OMSPEC_OUTPUT_STREAM"] = endpoints.outEndpoint; // Where server PUSHES
+
+            managerLogger.infof("[%s] Spawning worker on streams IN: %s | OUT: %s",
                 this.workflow,
-                this.planPath,
-                chunk_id.to!string
-            ], this.workerEnv);
+                endpoints.inEndpoint,
+                endpoints.outEndpoint);
+
+            return spawnProcess(
+                [this.pythonPath, this.scriptPath],
+                workerEnv,
+                Config.retainStderr | Config.retainStdout
+            );
         }
         catch (Exception e)
         {
-            managerLogger.errorf("System error spawning Chunk %d: %s", chunk_id, e.msg);
-            return Pid.init;
+            managerLogger.errorf("OS Error during worker spawn: %s", e.msg);
+            return Pid.init; // Returns an invalid Pid to signal failure
         }
     }
 }

@@ -43,8 +43,6 @@ public class Scheduler
     private ProgressBar progBar;
     private int completed = 0, running = 0, failed = 0;
 
-    private int i_log = 0;
-
     this(ProcessRunner runner, string planPath)
     {
         this.planPath = planPath;
@@ -56,120 +54,56 @@ public class Scheduler
 
     public bool execute_plan()
     {
-        // Read plan from JSON
-        auto plan = parseJSON(readText(this.planPath));
+        JSONValue plan = parseJSON(readText(this.planPath));
 
-        // On exit, terminate all workers
         scope (exit)
         {
             this.manager.terminateAll();
             progBar.finish();
         }
+        auto planArray = plan.array;
+        size_t numChunks = planArray.length;
+        size_t[] numImages;
+        numImages.length = numChunks;
 
-        const size_t num_chunks = plan.array.length;
-        if (num_chunks <= 0)
+        // Initialize Queue
+        foreach (i; 0 .. numChunks)
         {
-            processLogger.errorf("Plan is empty");
-            return false;
+            this.taskQueue.insertBack(cast(uint) i);
+            numImages[i] = planArray[i]["images"].array.length;
         }
 
-        size_t[] chunk_sizes = plan.array.map!(c => cast(size_t) c["chunk_size"].get!long).array;
+        processLogger.infof("Starting Execution of %d Chunks", numChunks);
+        progBar = ProgressBar(cast(int) numChunks);
 
-        foreach (i; 0 .. num_chunks)
-            this.taskQueue.insertBack(i);
-
-        size_t queueSize = cast(size_t) num_chunks;
-        processLogger.infof("Starting Execution of %d Chunks", num_chunks);
-
-        // Spawn progress bar
-        progBar = ProgressBar(cast(int) num_chunks);
-
-        while (!this.taskQueue.empty || this.manager.getActiveProcessCount() > 0)
+        while (!this.taskQueue.empty || this.manager.busy)
         {
             if (atomicLoad(shutdownRequested))
+                break;
+
+            // Phase 1: Feed the Manager
+            if (!this.taskQueue.empty && !this.manager.busy)
             {
-                writeln(
-                    "Shutdown requested by user. Stopping scheduler and Terminating all workers..."
-                );
-                processLogger.warning("Shutdown requested by user. Stopping scheduler...");
-                break; // Exit the loop to trigger the scope(exit) cleanup
+                uint next_chunk_id = cast(uint) this.taskQueue.front;
+                uint num_images = cast(uint) numImages[next_chunk_id];
+                this.taskQueue.removeFront();
+                this.manager.putChunk(next_chunk_id, num_images);
+
+                processLogger.infof("Put chunk %d with %d tasks in Manager", next_chunk_id, num_images);
             }
 
-            // Phase 1 : Update ProgressBar values (Cleanup is handled by Manager)
-            ChunkGraveyard graveyard = this.manager.reap();
-            int to_retry = 0;
-            foreach (uint i; graveyard.completed)
-                completed++;
-            foreach (uint i; graveyard.failed)
-                failed++;
-            foreach (uint i; graveyard.retries)
-                this.taskQueue.insertFront(i); to_retry++;
+            // Phase 2: Run the Manager's "Timeslice"
+            this.manager.processTick();
 
-            running = cast(int) this.manager.getActiveProcessCount();
-            processLogger.infof("--- Scheduling | Running: %d | Pending: %d | Graveyard: %d ---",
-                running, queueSize, completed + failed);
-            if (i_log++ % 4 == 0)
-            {
-                auto ramDetails = this.manager.getRAMDetails();
-                processLogger.infof("Current System RAM Usage: %d MB Used, %d MB Avl",
-                    ramDetails[0] / (1024 * 1024), ramDetails[1] / (1024 * 1024));
-            }
-
-            // Phase 2 : Worker Spawning (Backfill Aware)
-            size_t checkedCount = 0;
-            while (!this.taskQueue.empty && checkedCount < queueSize)
-            {
-                size_t next_chunk_id = this.taskQueue.front;
-                size_t next_chunk_size = chunk_sizes[next_chunk_id];
-
-                SpawnVerdict result = this.manager.trySpawn(next_chunk_id, next_chunk_size);
-
-                if (result == SpawnVerdict.OK)
-                {
-                    this.taskQueue.removeFront();
-                    queueSize--; // defined when queue is first loaded
-                    checkedCount = 0;
-
-                    processLogger.infof("[SPAWN] Successfully started Chunk %d. Estimated Mem: %d MB",
-                        next_chunk_id, next_chunk_size / (1024 * 1024));
-                    continue;
-                }
-
-                if (result == SpawnVerdict.SYSTEM_BUSY_CPU)
-                {
-                    processLogger.warning(
-                        "[HALT] CPU Saturation reached. Waiting for slots to open.");
-                    break;
-                }
-
-                // Memory Busy (Theoretical or System RAM): Try to find a smaller chunk.
-                if (result == SpawnVerdict.SYSTEM_BUSY_RAM || result == SpawnVerdict
-                    .LIMIT_REACHED_MEM)
-                {
-                    this.taskQueue.removeFront();
-                    this.taskQueue.insertBack(next_chunk_id);
-                    checkedCount++; // Increment so we don't loop forever
-
-                    processLogger.infof("[SKIP] Backfilling Chunk %d. Reason: Memory Pressure (Needs %d MB)",
-                        next_chunk_id, next_chunk_size / (1024 * 1024));
-                    continue;
-                }
-
-                if (result == SpawnVerdict.SPAWN_FAILURE)
-                {
-                    processLogger.criticalf("[FATAL] OS failed to spawn process for Chunk %d. Aborting cycle.",
-                        next_chunk_id);
-                }
-            }
-
-            // Phase 3: Tick Wait
+            // Phase 3: UI
+            auto stats = this.manager.getProgressStats();
+            completed = stats[0]; running = stats[1]; failed = stats[2];
             progBar.update(completed, running, failed);
-            // i have removed logging resource usage here. it will be logged in process monitor or process manager
+
             Thread.sleep(dur!"msecs"(tickIntervalMS));
         }
 
-        progBar.finish();
-        return failed == 0;
+        return true;
     }
 
     public string get_summary()

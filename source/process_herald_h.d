@@ -70,7 +70,7 @@ class WorkerConnection
                     case WorkerMessages.Heartbeat:
                         continue;
                     case WorkerMessages.MessageInvalid:
-                        heraldLogger.warn("Received invalid message from worker %s", this.pid);
+                        heraldLogger.warningf("Received invalid message from worker %s", this.pid);
                         continue;
                     default:
                         break;
@@ -83,7 +83,7 @@ class WorkerConnection
             }
             catch (Exception e)
             {
-                heraldLogger.error("Failed to receive message from worker %s: %s", this.pid, e.msg);
+                heraldLogger.errorf("Failed to receive message from worker %s @ %s: %s", this.pid, this.socketIn, e.msg);
                 hasMessage = false;
             }
         }
@@ -104,6 +104,12 @@ struct HeraldMessage
         this.payload = [];
     }
 
+    this(ulong workerId, WorkerMessages msg, uint[] payload) {
+        this.workerId = workerId;
+        this.msgType = msg;
+        this.payload = payload;
+    }
+
     string encodeToString()
     {
         import std.json;
@@ -120,6 +126,8 @@ struct HeraldMessage
 
 HeraldMessage decodeFromString(string jsonStr)
 {
+    import std.json;
+
     JSONValue val = parseJSON(jsonStr);
     HeraldMessage msg;
     uint completion = 0;
@@ -146,13 +154,13 @@ HeraldMessage decodeFromString(string jsonStr)
     }
 
     if (!(completion && 0b001))
-        heraldLogger.warn(
+        heraldLogger.warning(
             "Failed to fully decode HeraldMessage from JSON: missing field 'workerId'");
     if (!(completion && 0b010))
-        heraldLogger.warn(
+        heraldLogger.warning(
             "Failed to fully decode HeraldMessage from JSON: missing field 'msgType'");
     if (!(completion && 0b100))
-        heraldLogger.warn(
+        heraldLogger.warning(
             "Failed to fully decode HeraldMessage from JSON: missing field 'payload'");
 
     return completion && 0b11 ? msg : HeraldMessage(WorkerMessages.MessageInvalid);

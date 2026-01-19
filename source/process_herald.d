@@ -44,7 +44,7 @@ class ProcessHerald
     {
         send(this.heraldTid, M_ReserveEndpoints(true));
 
-        ZMQEndpoints endpoints = receiveOnly!ZMQEndpoints;
+        ZMQEndpoints endpoints = cast(ZMQEndpoints) receiveOnly!(immutable ZMQEndpoints);
         return endpoints;
     }
 
@@ -161,7 +161,7 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
         },
             (M_UnreserveEndpoints req) {
 
-            ZMQEndpoints ep = req.endpoints;
+            ZMQEndpoints ep = cast(ZMQEndpoints) req.endpoints;
             ep.socketIn.close();
             ep.socketOut.close();
 
@@ -173,8 +173,8 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
             {
                 auto conn = new WorkerConnection(
                     req.workerId,
-                    req.connections.socketIn, // Pointer to the PULL socket
-                    req.connections.socketOut, // Pointer to the PUSH socket
+                    cast(Socket*) req.endpoints.socketIn, // Pointer to the PULL socket
+                    cast(Socket*) req.endpoints.socketOut, // Pointer to the PUSH socket
                     herald.getHbInterval()
                 );
 
@@ -272,7 +272,7 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
                 HeraldMessage timeoutErr = HeraldMessage(
                     conn.pid,
                     WorkerMessages.WorkerError,
-                    [WorkerErrorCodes.WatchdogTimeout]
+                    [cast(uint) WorkerErrorCodes.WatchdogTimeout]
                 );
 
                 herald.pushPriorityInbox(timeoutErr);

@@ -66,9 +66,8 @@ struct ChunkControlBlock
     {
         foreach (size_t i, TaskState state; taskStates)
             if (state == TaskState.PENDING)
-                return i;
+                return cast(uint) i;
 
-        // if no pending images, return uint.max
         return uint.max;
     }
 
