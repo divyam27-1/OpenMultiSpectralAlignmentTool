@@ -46,6 +46,7 @@ class ProcessManager
     // Mailboxes
     private DList!Variant monitorMailbox;
     private DList!Variant heraldMailbox;
+    private DList!HeraldMessage responseMailbox;
 
     private immutable size_t maxMemory;
     private immutable size_t physicalCoreCount;
@@ -115,11 +116,13 @@ class ProcessManager
 
     void processTick()
     {
+        this.collectMessages();
+
         if (this.managerFiber && this.managerFiber.state != Fiber.State.TERM)
             this.managerFiber.call();
     }
 
-    // TODO: add functionality to kill or throttle idle workers if cpu is being over utilized
+    // TODO later: add functionality to kill or throttle idle workers if cpu is being over utilized
     private void processChunk(uint chunkId, uint numImages)
     {
         this.currentChunk = ChunkControlBlock(chunkId, numImages); // I made a constructor for the struct that self populates the Dynamic Array 
@@ -128,12 +131,33 @@ class ProcessManager
         // Execution Loop
         while (!currentChunk.isComplete())
         {
-            HeraldMessage[] messages = herald.popMessages();
-            foreach (msg; messages)
-                handleWorkerResponse(msg);
+            // Response : Something returned from Worker via ZMQ
+            // Message : Something returned from thread via std.concurrency
+            HeraldMessage[] newResponses = herald.popResponses();
+            foreach (res; newResponses)
+                responseMailbox.insertBack(res);
+
+            size_t responsesToProcess = 0;
+            foreach (m; responseMailbox)
+                responsesToProcess++; // Get current snapshot size
+
+            while (responsesToProcess > 0)
+            {
+                HeraldMessage msg = responseMailbox.front;
+                responseMailbox.removeFront();
+
+                bool handled = handleWorkerResponse(msg);
+                if (!handled)
+                    responseMailbox.insertBack(msg);
+
+                messagesToProcess--;
+            }
+
+            // Sensing
+            updateMonitor();
+            updateSpawningWorkers();
 
             reapWorkers();
-            updateSpawningWorkers();
             dispatchTasksToIdleWorkers();
 
             if (currentChunk.hasUnassignedWork() && !hasIdleWorkers() && canSpawn(chunkId))
@@ -203,36 +227,54 @@ class ProcessManager
         }
     }
 
-    private void handleWorkerResponse(HeraldMessage msg)
+    // Returns True if task is fully handled by this function
+    // Returns False if task needs more operations or state changes
+    private bool handleWorkerResponse(HeraldMessage msg)
     {
-        ProcessControlBlock* pcb = (cast(uint) msg.workerId) in pcbMap;
+        uint workerId = cast(uint) msg.workerId;
+        ProcessControlBlock* pcb = workerId in pcbMap;
+
+        // 1. Ghost Message Check
         if (!pcb)
         {
-            managerLogger.errorf("Received message for unknown PID %d: %s", msg.workerId, msg
+            managerLogger.errorf("Received message for unknown PID %d: %s (Discarding)", workerId, msg
                     .msgType);
-            return;
+            return true; // Discard: no PCB means we can't do anything anyway
         }
 
         switch (msg.msgType)
         {
         case WorkerMessages.Heartbeat:
-            if (pcb.state == WorkerState.SPAWNING)
+            if (auto pStatus = workerId in spawningMap)
             {
+                // Only promote if the Registration Handshake is COMPLETE
+                if (*pStatus != WorkerCreationStatus.Created)
+                    return false;
+
                 pcb.state = WorkerState.IDLE;
-                pcb.taskTimer.reset(); // Stop the spawning watchdog timer
-                managerLogger.infof("Worker %d handshake successful. Ready for tasks.", msg
-                        .workerId);
+                pcb.taskTimer.reset();
+                this.spawningMap.remove(workerId);
+                managerLogger.infof("Worker %d handshake successful. Ready for tasks.", workerId);
+                return true;
+
             }
-            break;
+
+            // If it's already IDLE or BUSY, a heartbeat is just a "keep-alive"
+            // Althought non-first heartbeats should be filtered by WorkerConnection.recvMessages() anyways
+            return true;
 
         case WorkerMessages.TaskFinish:
+            // If for some reason the task finishes before we've cleared the spawningMap
+            // we should probably clear the spawning status here too.
+            if (workerId in spawningMap)
+                spawningMap.remove(workerId);
+
             const uint imgIdx = pcb.activeImageIdx;
             if (imgIdx == uint.max)
             {
-                managerLogger.errorf("Worker %d finished, but activeImageIdx was null.", msg
-                        .workerId);
+                managerLogger.errorf("Worker %d finished, but activeImageIdx was max.", workerId);
                 pcb.state = WorkerState.IDLE;
-                return;
+                return true;
             }
 
             auto status = cast(TaskFinishCodes) msg.payload[0];
@@ -241,20 +283,22 @@ class ProcessManager
             pcb.state = WorkerState.IDLE;
             pcb.activeImageIdx = uint.max;
             pcb.taskTimer.stop();
-            break;
+            return true;
 
         case WorkerMessages.WorkerError:
         case WorkerMessages.MessageInvalid:
-            managerLogger.errorf("Worker %d critical failure: %s", msg.workerId, msg.msgType);
+            managerLogger.errorf("Worker %d critical failure: %s", workerId, msg.msgType);
             pcb.state = WorkerState.UNRESPONSIVE;
-            break;
+            return true;
 
         case WorkerMessages.WorkerStop:
             pcb.state = WorkerState.KILLED;
-            break;
+            return true;
 
         default:
-            break;
+            // If we don't know what this is, we might as well discard it 
+            // or return true so it doesn't clog the rotation.
+            return true;
         }
     }
 
@@ -513,7 +557,7 @@ class ProcessManager
         size_t total = 0;
         foreach (uint pid; this.pcbMap.keys)
         {
-            ProcessMonitorReport report = ProcessMonitorReport();       // default initializes everything to 0
+            ProcessMonitorReport report = ProcessMonitorReport(); // default initializes everything to 0
 
             // If a process is spawning currently, its RAM usage will be set to default value of 200 MB
             if (pid !in this.spawningMap)

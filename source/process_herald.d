@@ -73,16 +73,16 @@ class ProcessHerald
         return true;
     }
 
-    HeraldMessage[] popMessages()
+    HeraldMessage[] popResponses()
     {
         // Flush all mailboxes into the globalInbox
         this.collapseMailboxes();
 
         synchronized (inboxMutex)
         {
-            auto messages = globalInbox.dup;
+            auto responses = globalInbox.dup;
             globalInbox.length = 0;
-            return messages;
+            return responses;
         }
     }
 
