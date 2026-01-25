@@ -15,6 +15,7 @@ import std.exception : enforce;
 import std.conv;
 import std.array;
 import std.container.dlist;
+import std.variant;
 import core.thread.fiber;
 
 import process_manager_h;
@@ -31,13 +32,20 @@ class ProcessManager
     bool busy = false;
     private Fiber managerFiber;
 
+    // Dependencies
     private ProcessRunner runner;
     private ProcessMonitor monitor;
     private ProcessHerald herald;
 
-    private ProcessControlBlock[uint] pcbMap;
-    private ProcessMonitorReport[uint] monitorMap;
+    // Worker Maps
+    private ProcessControlBlock[uint] pcbMap; // map of all workers
+    private ProcessMonitorReport[uint] monitorMap; // map of all workers tracked by monitor
+    private WorkerCreationStatus[uint] spawningMap; // map of all workers who are currently SPAWNING
     private ChunkControlBlock currentChunk;
+
+    // Mailboxes
+    private DList!Variant monitorMailbox;
+    private DList!Variant heraldMailbox;
 
     private immutable size_t maxMemory;
     private immutable size_t physicalCoreCount;
@@ -79,8 +87,11 @@ class ProcessManager
         this.updateMonitor();
     }
 
-    void putChunk(uint chunkId, uint numImages)
+    bool putChunk(uint chunkId, uint numImages)
     {
+        if (this.busy)
+            return false;
+
         this.busy = true;
 
         managerFiber = new Fiber({
@@ -98,6 +109,8 @@ class ProcessManager
                 this.busy = false;
             }
         }, 64 * 1024);
+
+        return true;
     }
 
     void processTick()
@@ -120,15 +133,47 @@ class ProcessManager
                 handleWorkerResponse(msg);
 
             reapWorkers();
+            updateSpawningWorkers();
             dispatchTasksToIdleWorkers();
 
             if (currentChunk.hasUnassignedWork() && !hasIdleWorkers() && canSpawn(chunkId))
-                spawnNewWorker();
+                initiateNewWorker();
 
             Fiber.yield();
         }
 
         managerLogger.infof("Chunk %d processing cycle finished.", chunkId);
+    }
+
+    private void collectMessages()
+    {
+        bool messagesPending = true;
+
+        while (messagesPending)
+        {
+            bool found = receiveTimeout(0.msecs, // Monitor Messages
+                (M_TelemetryUpdate msg) {
+                monitorMailbox.insertBack(Variant(msg));
+            }, // Herald Messages
+                (immutable ZMQEndpoints msg) {
+                heraldMailbox.insertBack(Variant(msg));
+            },
+                (M_RegisterResponse msg) {
+                heraldMailbox.insertBack(Variant(msg));
+            },
+                (M_DeregisterRequest msg) {
+                heraldMailbox.insertBack(Variant(msg));
+            }, // Unknown Messages
+                (Variant any) {
+                managerLogger.warning("Manager received unhandled message type: ", any.type);
+            }
+            );
+
+            if (!found)
+            {
+                messagesPending = false;
+            }
+        }
     }
 
     private void dispatchTasksToIdleWorkers()
@@ -302,52 +347,106 @@ class ProcessManager
         return false;
     }
 
-    public void spawnNewWorker()
+    private void initiateNewWorker()
     {
-        ZMQEndpoints endpoints = herald.reserveEndpoints();
+        import std.random : uniform;
 
-        try
+        uint tempId = uniform!uint;
+
+        ProcessControlBlock pcb;
+        pcb.pid = Pid.init;
+        pcb.state = WorkerState.SPAWNING;
+        pcb.activeChunkId = currentChunk.chunkId;
+        pcb.activeImageIdx = uint.max;
+        pcb.taskTimer = StopWatch(AutoStart.yes);
+        pcb.lastMemoryUsage = 200 * 1024 * 1024; // 200 MB which is approx amount of barebones python runtime
+
+        this.spawningMap[tempId] = WorkerCreationStatus.ReservingEndpoints;
+        this.pcbMap[tempId] = pcb;
+
+        this.herald.requestEndpoints(tempId);
+        managerLogger.infof("Initiated spawn for Chunk %d (Request ID: %d)", currentChunk.chunkId, tempId);
+    }
+
+    void updateSpawningWorkers()
+    {
+        foreach (uint id, ref WorkerCreationStatus status; this.spawningMap.dup)
         {
-            Pid pid = this.runner.spawn_worker(endpoints);
-
-            if (pid is Pid.init)
+            final switch (status)
             {
-                managerLogger.errorf("OS failed to spawn worker for Chunk %d", currentChunk.chunkId);
-                herald.unreserveEndpoints(endpoints);
-                return;
+            case WorkerCreationStatus.ReservingEndpoints:
+                // Right now the ID we are working on the the TempID the initializeNewWorker initialized this worker with
+                immutable ZMQEndpoints* msg = heraldMailbox.popFromBucket!(
+                    immutable ZMQEndpoints)(id);
+                if (msg == null)
+                    break;
+                if (msg.workerId != id)
+                    break;
+
+                // At this point, we have reserved some endpoints for our message
+                // Now we can spawn a worker and set status to Registering
+                // Spawning goes ReservingEndpoints --> endpoints are received, worker is spawned --> RegisteringConnection --> worker is registered to those endpoints, thus forming a connection object
+                ZMQEndpoints endpoints = cast(ZMQEndpoints)*msg;
+
+                try
+                {
+                    Pid pid = this.runner.spawn_worker(endpoints);
+                    if (pid is Pid.init)
+                    {
+                        managerLogger.errorf("OS failed to spawn worker for Chunk %d",
+                            currentChunk.chunkId);
+                        herald.unreserveEndpoints(endpoints);
+                        this.pcbMap.remove(id);
+                        this.spawningMap.remove(id);
+                        return;
+                    }
+
+                    // Now we get the real workerPid and perform the handoff
+                    uint workerPid = cast(uint) pid.processID;
+
+                    this.pcbMap[workerPid] = pcbMap[id];
+                    this.pcbMap[workerPid].pid = pid;
+                    this.pcbMap.remove(id);
+
+                    this.spawningMap[workerPid] = WorkerCreationStatus.RegisteringConnection;
+                    this.spawningMap.remove(id);
+
+                    endpoints.workerId = workerPid;
+                    herald.registerWorker(workerPid, cast(immutable) endpoints);
+                    managerLogger.infof("Worker %d spawned. ZMQ: IN=%s OUT=%s",
+                        workerPid, endpoints.inEndpoint, endpoints.outEndpoint);
+                }
+                catch (Exception e)
+                {
+                    managerLogger.errorf("Critical failure spawning worker: %s", e.msg);
+                    herald.unreserveEndpoints(endpoints);
+                    this.pcbMap.remove(id);
+                    this.spawningMap.remove(id);
+                }
+
+                break;
+
+            case WorkerCreationStatus.RegisteringConnection:
+                // Now we are working on the real process pid assigned by the OS
+                M_RegisterResponse* res = heraldMailbox.popFromBucket!M_RegisterResponse(id);
+                if (res is null)
+                    break;
+
+                if (res.response == false)
+                    break; // I dont actually know what to do if register response failes yet, TODO later
+
+                // Now that Process has been registered, we can set WorkerCreationStatus to created, and move on with our lives?
+                spawningMap[id] = WorkerCreationStatus.Created;
+                break;
+
+            case WorkerCreationStatus.Created: // Skipped, the pcb state machine will use this as a gate and then promptly remove it from the spawningMap
+                // I dont actually know what to do with these because these are not supposed to be set according to the codebase yet, TODO later
+            case WorkerCreationStatus.UnreservingEndpoints:
+            case WorkerCreationStatus.DeregisteringConnection:
+            default:
+                break;
             }
-
-            uint workerPid = cast(uint) pid.processID;
-            bool registered = herald.registerWorker(workerPid, endpoints);
-
-            if (!registered)
-            {
-                managerLogger.errorf("Herald failed to register Worker %d", workerPid);
-                kill(pid);
-                return;
-            }
-
-            ProcessControlBlock pcb;
-            pcb.pid = pid;
-            pcb.state = WorkerState.SPAWNING;
-            pcb.activeChunkId = currentChunk.chunkId;
-            pcb.activeImageIdx = uint.max;
-            pcb.taskTimer = StopWatch(AutoStart.yes);
-            pcb.lastMemoryUsage = 200 * 1024 * 1024; // 200 MB which is approx amount of barebones python runtime
-
-            this.pcbMap[workerPid] = pcb;
-
-            managerLogger.infof("Worker %d spawned. ZMQ: IN=%s OUT=%s",
-                workerPid, endpoints.inEndpoint, endpoints.outEndpoint);
         }
-        catch (Exception e)
-        {
-            managerLogger.errorf("Critical failure spawning worker: %s", e.msg);
-            herald.unreserveEndpoints(endpoints);
-        }
-
-        this.updateMonitor();
-        this.monitor.updateTracking(pcbMap.keys.array);
     }
 
     public SpawnVerdict canSpawn(size_t chunkId)
@@ -412,12 +511,17 @@ class ProcessManager
         this.monitorMap.clear();
 
         size_t total = 0;
-        foreach (pid; this.pcbMap.keys)
+        foreach (uint pid; this.pcbMap.keys)
         {
-            ProcessMonitorReport report = this.monitor.getUsage(cast(uint) pid);
-            this.monitorMap[pid] = report;
+            ProcessMonitorReport report = ProcessMonitorReport();       // default initializes everything to 0
 
-            // If RAM is 0, it means the monitor hasn't caught the process yet
+            // If a process is spawning currently, its RAM usage will be set to default value of 200 MB
+            if (pid !in this.spawningMap)
+            {
+                report = this.monitor.getUsage(cast(uint) pid);
+                this.monitorMap[pid] = report;
+            }
+
             total += report.memory > 0 ? report.memory : this.pcbMap[pid].lastMemoryUsage;
         }
 

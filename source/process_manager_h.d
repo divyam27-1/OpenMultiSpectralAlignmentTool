@@ -9,6 +9,8 @@ import std.process : Pid;
 import std.datetime.systime : SysTime;
 import std.datetime.stopwatch : StopWatch, AutoStart;
 import std.conv : to;
+import std.container.dlist;
+import std.variant;
 
 enum WorkerState
 {
@@ -90,15 +92,6 @@ struct ChunkControlBlock
     }
 }
 
-// After workers are completed, failed or retried, their corresponding chunks 
-// have to be loaded in this graveyard before Scheduler handles them
-struct ChunkGraveyard
-{
-    uint[] completed;
-    uint[] failed;
-    uint[] retries;
-}
-
 public enum SpawnVerdict
 {
     OK,
@@ -106,6 +99,42 @@ public enum SpawnVerdict
     SYSTEM_BUSY_RAM,
     LIMIT_REACHED_MEM,
     SPAWN_FAILURE
+}
+
+T* popFromBucket(T)(ref DList!Variant bucket, uint targetId)
+{
+    Variant[] range = bucket[];
+
+    for (auto i = 0; i < range.length; i++)
+    {
+        Variant v = range[i];
+        if (auto msg = v.peek!T)
+        {
+            uint msgId = 0;
+
+            static if (__traits(hasMember, T, "workerId"))
+            {
+                msgId = msg.workerId;
+            }
+            else static if (__traits(hasMember, T, "tempWorkerID"))
+            {
+                msgId = msg.tempWorkerID;
+            }
+            else
+            {
+                static assert(false,
+                    "Type " ~ T.stringof ~ " must have workerId or tempWorkerID to be used in popFromBucket");
+            }
+
+            if (msgId == targetId)
+            {
+                T* heapCopy = new T(*msg);
+                bucket.linearRemove(range[i .. i + 1]);
+                return heapCopy;
+            }
+        }
+    }
+    return null;
 }
 
 uint getPhysicalCoreCount()

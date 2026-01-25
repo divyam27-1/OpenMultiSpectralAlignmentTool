@@ -40,34 +40,24 @@ class ProcessHerald
         this.heraldTid = spawn(&heraldWorker, cast(shared) this, thisTid);
     }
 
-    ZMQEndpoints reserveEndpoints()
+    void reserveEndpoints(uint tempId)
     {
-        send(this.heraldTid, M_ReserveEndpoints(true));
-
-        ZMQEndpoints endpoints = cast(ZMQEndpoints) receiveOnly!(immutable ZMQEndpoints);
-        return endpoints;
+        send(this.heraldTid, M_ReserveEndpoints(tempId));
     }
 
-    bool unreserveEndpoints(ZMQEndpoints endpoints)
+    void unreserveEndpoints(ZMQEndpoints endpoints)
     {
-        send(this.heraldTid, M_UnreserveEndpoints(cast(immutable) endpoints));
-
-        bool ret = receiveOnly!M_RegisterResponse.i;
-        return ret;
+        send(this.heraldTid, M_UnreserveEndpoints(endpoints));
     }
 
-    bool registerWorker(uint workerId, ZMQEndpoints endpoints)
+    void registerWorker(uint workerId, ZMQEndpoints endpoints)
     {
         send(this.heraldTid, M_RegisterRequest(workerId, cast(immutable) endpoints));
-        bool ret = receiveOnly!M_RegisterResponse.i;
-
-        return ret;
     }
 
     void deregisterWorker(uint workerId)
     {
         send(this.heraldTid, M_DeregisterRequest(workerId));
-        heraldLogger.infof("Sent Deregister request for worker %d", workerId);
     }
 
     bool sendTask(uint workerId, uint chunkId, uint imageIdx)

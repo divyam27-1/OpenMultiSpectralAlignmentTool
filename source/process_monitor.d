@@ -7,6 +7,8 @@ import std.datetime : Duration;
 import std.datetime.stopwatch : StopWatch, AutoStart;
 import core.time : msecs, Duration;
 import std.concurrency;
+import std.container.dlist;
+import std.variant;
 import core.thread;
 
 import process_monitor_h;
@@ -25,27 +27,24 @@ class ProcessMonitor
         this.monitorTid = spawn(&monitorWorker, thisTid, cast(shared) fetcher);
     }
 
-    // Refreshes the monitors local state
-    void refresh()
+    void refresh(ref DList!Variant bucket)
     {
         M_TelemetryUpdate* latest = null;
 
-        // Keep pulling until the mailbox is EMPTY
-        while (receiveTimeout(dur!"msecs"(0),
-                (M_TelemetryUpdate update) {
-                latest = new M_TelemetryUpdate(update.pidUsageKeys, update.pidUsageValues, update
-                .availableSystemRAM); // Overwrite with newer data
-            }))
-        {
-        }
+        foreach (v; bucket)
+            if (auto update = v.peek!M_TelemetryUpdate)
+                latest = cast(M_TelemetryUpdate*) update;
 
         if (latest !is null)
         {
             this.pidUsageMap.clear();
             foreach (size_t i, uint key; latest.pidUsageKeys)
                 this.pidUsageMap[key] = latest.pidUsageValues[i];
+
             this.availableSystemRAM = latest.availableSystemRAM;
         }
+
+        bucket.clear();
     }
 
     void updateTracking(uint[] pids)
@@ -63,6 +62,8 @@ class ProcessMonitor
         return availableSystemRAM;
     }
 
+
+    // TODO: implement proper shutdowns of all worker threads not just monitor
     void shutDownWorker()
     {
         send(monitorTid, M_MonitorWorkerShutdown());

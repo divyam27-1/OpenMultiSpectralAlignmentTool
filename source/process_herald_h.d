@@ -59,7 +59,8 @@ class WorkerConnection
                     this.resetWatchdog();
 
                     // It should register the first heartbeat so that Manager knows the process is alive
-                    if (msg.msgType == WorkerMessages.Heartbeat && !born) {
+                    if (msg.msgType == WorkerMessages.Heartbeat && !born)
+                    {
                         this.mailbox.insertBack(msg);
                         born = true;
                         continue;
@@ -83,7 +84,8 @@ class WorkerConnection
             }
             catch (Exception e)
             {
-                heraldLogger.errorf("Failed to receive message from worker %s @ %s: %s", this.pid, this.socketIn, e.msg);
+                heraldLogger.errorf("Failed to receive message from worker %s @ %s: %s", this.pid, this.socketIn, e
+                        .msg);
                 hasMessage = false;
             }
         }
@@ -104,7 +106,8 @@ struct HeraldMessage
         this.payload = [];
     }
 
-    this(ulong workerId, WorkerMessages msg, uint[] payload) {
+    this(ulong workerId, WorkerMessages msg, uint[] payload)
+    {
         this.workerId = workerId;
         this.msgType = msg;
         this.payload = payload;
@@ -166,13 +169,6 @@ HeraldMessage decodeFromString(string jsonStr)
     return completion && 0b11 ? msg : HeraldMessage(WorkerMessages.MessageInvalid);
 }
 
-struct ZMQEndpoints {
-    string inEndpoint;
-    string outEndpoint;
-    Socket* socketIn;
-    Socket* socketOut;
-}
-
 // If a client receives a messsage of this type, it should reason it as a command
 // If server receives a message of this type, it should reason it as a completion of said command
 enum WorkerMessages : int
@@ -202,9 +198,50 @@ enum WorkerErrorCodes : int
     UnknownWorkflow = 4
 }
 
-struct M_ReserveEndpoints { bool i; }
-struct M_UnreserveEndpoints { immutable ZMQEndpoints endpoints; }
-struct M_RegisterRequest { uint workerId; immutable ZMQEndpoints endpoints; }
-struct M_RegisterResponse { bool i; }
-struct M_DeregisterRequest { uint workerId; }
-struct M_SendTaskRequest { uint workerId; uint chunkId; uint imageIdx; }
+enum WorkerCreationStatus : int
+{
+    ReservingEndpoints,
+    RegisteringConnection,
+    Created,
+    UnreservingEndpoints,
+    DeregisteringConnection
+}
+
+struct ZMQEndpoints
+{
+    uint workerId;
+
+    string inEndpoint;
+    string outEndpoint;
+    Socket* socketIn;
+    Socket* socketOut;
+}
+
+struct M_ReserveEndpoints
+{
+    uint tempWorkerID;
+}
+struct M_UnreserveEndpoints
+{
+    immutable ZMQEndpoints endpoints;
+}
+struct M_RegisterRequest
+{
+    uint workerId;
+    immutable ZMQEndpoints endpoints;
+}
+struct M_RegisterResponse
+{
+    uint workerId;
+    bool response;
+}
+struct M_DeregisterRequest
+{
+    uint workerId;
+}
+struct M_SendTaskRequest
+{
+    uint workerId;
+    uint chunkId;
+    uint imageIdx;
+}
