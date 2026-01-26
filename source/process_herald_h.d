@@ -219,7 +219,7 @@ struct ZMQEndpoints
 
 struct M_ReserveEndpoints
 {
-    uint tempWorkerID;
+    uint workerID;
 }
 struct M_UnreserveEndpoints
 {

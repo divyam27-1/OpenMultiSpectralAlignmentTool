@@ -2,6 +2,7 @@ module process_manager;
 
 import std.stdio;
 import std.parallelism : totalCPUs;
+import std.concurrency;
 import std.process : tryWait;
 import std.process;
 import std.algorithm : map;
@@ -55,6 +56,7 @@ class ProcessManager
     private immutable int smtRatio;
     private immutable size_t memoryHeadroom = 256 * 1024 * 1024;
     private immutable int maxRetries;
+    private immutable uint flushLimit = 8; // if a worker has more than 8 completed images in store flush will be triggered
 
     private size_t currentMemoryUsage;
     private size_t availableSystemRAM;
@@ -70,7 +72,7 @@ class ProcessManager
         this.monitor = new ProcessMonitor(new WindowsMemoryFetcher());
         this.herald = new ProcessHerald();
 
-        this.monitor.refresh();
+        this.monitor.refresh(this.monitorMailbox);
         this.currentChunk = ChunkControlBlock();
 
         auto cfg = loadConfig(buildPath(thisExePath().dirName, "omspec.cfg").absolutePath());
@@ -116,10 +118,10 @@ class ProcessManager
 
     void processTick()
     {
-        this.collectMessages();
+        collectMessages();
 
         if (this.managerFiber && this.managerFiber.state != Fiber.State.TERM)
-            this.managerFiber.call();
+            managerFiber.call();
     }
 
     // TODO later: add functionality to kill or throttle idle workers if cpu is being over utilized
@@ -133,33 +135,19 @@ class ProcessManager
         {
             // Response : Something returned from Worker via ZMQ
             // Message : Something returned from thread via std.concurrency
-            HeraldMessage[] newResponses = herald.popResponses();
-            foreach (res; newResponses)
-                responseMailbox.insertBack(res);
-
-            size_t responsesToProcess = 0;
-            foreach (m; responseMailbox)
-                responsesToProcess++; // Get current snapshot size
-
-            while (responsesToProcess > 0)
-            {
-                HeraldMessage msg = responseMailbox.front;
-                responseMailbox.removeFront();
-
-                bool handled = handleWorkerResponse(msg);
-                if (!handled)
-                    responseMailbox.insertBack(msg);
-
-                messagesToProcess--;
-            }
 
             // Sensing
             updateMonitor();
             updateSpawningWorkers();
 
+            // Maintenance
             reapWorkers();
+
+            // Task Delegation
+            handleAllWorkerResponses();
             dispatchTasksToIdleWorkers();
 
+            // Scaling
             if (currentChunk.hasUnassignedWork() && !hasIdleWorkers() && canSpawn(chunkId))
                 initiateNewWorker();
 
@@ -224,6 +212,29 @@ class ProcessManager
 
             managerLogger.infof("Assigned: Worker %d -> Chunk %d, Image %d",
                 workerId, currentChunk.chunkId, imgIdx);
+        }
+    }
+
+    private void handleAllWorkerResponses()
+    {
+        HeraldMessage[] newResponses = herald.popResponses();
+        foreach (res; newResponses)
+            responseMailbox.insertBack(res);
+
+        size_t responsesToProcess = 0;
+        foreach (m; responseMailbox)
+            responsesToProcess++;
+
+        while (responsesToProcess > 0)
+        {
+            HeraldMessage msg = responseMailbox.front;
+            responseMailbox.removeFront();
+
+            bool handled = handleWorkerResponse(msg);
+            if (!handled)
+                responseMailbox.insertBack(msg);
+
+            responsesToProcess--;
         }
     }
 
@@ -403,12 +414,12 @@ class ProcessManager
         pcb.activeChunkId = currentChunk.chunkId;
         pcb.activeImageIdx = uint.max;
         pcb.taskTimer = StopWatch(AutoStart.yes);
-        pcb.lastMemoryUsage = 200 * 1024 * 1024; // 200 MB which is approx amount of barebones python runtime
+        pcb.lastMemoryUsage = 250 * 1024 * 1024; // 200 MB which is approx amount of barebones python runtime
 
         this.spawningMap[tempId] = WorkerCreationStatus.ReservingEndpoints;
         this.pcbMap[tempId] = pcb;
 
-        this.herald.requestEndpoints(tempId);
+        this.herald.reserveEndpoints(tempId);
         managerLogger.infof("Initiated spawn for Chunk %d (Request ID: %d)", currentChunk.chunkId, tempId);
     }
 
@@ -420,8 +431,7 @@ class ProcessManager
             {
             case WorkerCreationStatus.ReservingEndpoints:
                 // Right now the ID we are working on the the TempID the initializeNewWorker initialized this worker with
-                immutable ZMQEndpoints* msg = heraldMailbox.popFromBucket!(
-                    immutable ZMQEndpoints)(id);
+                immutable ZMQEndpoints* msg = heraldMailbox.popFromBucket!(immutable ZMQEndpoints)(id);
                 if (msg == null)
                     break;
                 if (msg.workerId != id)
@@ -456,7 +466,7 @@ class ProcessManager
                     this.spawningMap.remove(id);
 
                     endpoints.workerId = workerPid;
-                    herald.registerWorker(workerPid, cast(immutable) endpoints);
+                    herald.registerWorker(workerPid, endpoints);
                     managerLogger.infof("Worker %d spawned. ZMQ: IN=%s OUT=%s",
                         workerPid, endpoints.inEndpoint, endpoints.outEndpoint);
                 }
@@ -487,13 +497,12 @@ class ProcessManager
                 // I dont actually know what to do with these because these are not supposed to be set according to the codebase yet, TODO later
             case WorkerCreationStatus.UnreservingEndpoints:
             case WorkerCreationStatus.DeregisteringConnection:
-            default:
                 break;
             }
         }
     }
 
-    public SpawnVerdict canSpawn(size_t chunkId)
+    private SpawnVerdict canSpawn(size_t chunkId)
     {
         import std.math : isNaN;
 
@@ -551,7 +560,16 @@ class ProcessManager
 
     private void updateMonitor()
     {
-        this.monitor.refresh();
+        uint[] realPids;
+        realPids.reserve(pcbMap.length);
+        foreach (uint pid; pcbMap.keys)
+        {
+            if (pid !in spawningMap)
+                realPids ~= pid;
+        }
+
+        this.monitor.updateTracking(realPids);
+        this.monitor.refresh(monitorMailbox);
         this.monitorMap.clear();
 
         size_t total = 0;

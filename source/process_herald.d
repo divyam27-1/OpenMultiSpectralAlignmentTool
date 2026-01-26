@@ -47,7 +47,7 @@ class ProcessHerald
 
     void unreserveEndpoints(ZMQEndpoints endpoints)
     {
-        send(this.heraldTid, M_UnreserveEndpoints(endpoints));
+        send(this.heraldTid, M_UnreserveEndpoints(cast(immutable) endpoints));
     }
 
     void registerWorker(uint workerId, ZMQEndpoints endpoints)
@@ -145,7 +145,7 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
             socketIn.bind("tcp://127.0.0.1:*");
             string inEP = cast(string) socketIn.lastEndpoint;
 
-            ZMQEndpoints endpoints = ZMQEndpoints(inEP, outEP, socketIn, socketOut);
+            ZMQEndpoints endpoints = ZMQEndpoints(req.workerID, inEP, outEP, socketIn, socketOut);
 
             send(parentTid, cast(immutable) endpoints);
         },
@@ -155,7 +155,7 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
             ep.socketIn.close();
             ep.socketOut.close();
 
-            send(parentTid, M_RegisterResponse(true));
+            send(parentTid, M_RegisterResponse(req.endpoints.workerId, true));
         },
             (M_RegisterRequest req) {
 
@@ -173,7 +173,7 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
 
             heraldLogger.infof("Herald Thread: Successfully assumed ownership of sockets for Worker %d",
                 req.workerId);
-            send(parentTid, M_RegisterResponse(true));
+            send(parentTid, M_RegisterResponse(req.workerId, true));
         },
             (M_DeregisterRequest req) {
 
@@ -253,8 +253,11 @@ void heraldWorker(shared ProcessHerald sharedHerald, Tid parentTid)
         // --- 3. SECTION B: RECEIVE MESSAGES & WATCHDOGS ---
         foreach (conn; workers)
         {
-            conn.recvAllMessages(); // This should populate conn.mailbox
-
+            // This should populate conn.mailbox
+            // With the standard messages
+            conn.recvAllMessages();
+            
+            // Handles watchdog timeouts
             if (conn.watchdogTimeouts >= 7)
             {
                 heraldLogger.criticalf("Worker %d Watchdog Timeout!", conn.pid);

@@ -103,37 +103,45 @@ public enum SpawnVerdict
 
 T* popFromBucket(T)(ref DList!Variant bucket, uint targetId)
 {
-    Variant[] range = bucket[];
+    import std.range : drop, take;
+    import std.traits : Unqual;
+    import core.stdc.string : memcpy;
 
-    for (auto i = 0; i < range.length; i++)
+    auto range = bucket[]; 
+    size_t i = 0;
+
+    foreach (Variant v; range) // Variant is usually passed by value or 'ref'
     {
-        Variant v = range[i];
-        if (auto msg = v.peek!T)
+        T* pMsg = v.peek!T;
+
+        if (!pMsg)
         {
-            uint msgId = 0;
-
-            static if (__traits(hasMember, T, "workerId"))
-            {
-                msgId = msg.workerId;
-            }
-            else static if (__traits(hasMember, T, "tempWorkerID"))
-            {
-                msgId = msg.tempWorkerID;
-            }
-            else
-            {
-                static assert(false,
-                    "Type " ~ T.stringof ~ " must have workerId or tempWorkerID to be used in popFromBucket");
-            }
-
-            if (msgId == targetId)
-            {
-                T* heapCopy = new T(*msg);
-                bucket.linearRemove(range[i .. i + 1]);
-                return heapCopy;
-            }
+            i++;
+            continue;
         }
+
+        uint msgId = 0;
+        static if (__traits(hasMember, T, "workerId"))
+            msgId = pMsg.workerId;
+        else static if (__traits(hasMember, T, "tempWorkerID"))
+            msgId = pMsg.tempWorkerID;
+        else
+            static assert(false,
+                "Type " ~ T.stringof ~ " must have workerId or tempWorkerID");
+
+        if (msgId == targetId)
+        {
+            auto heapCopy = new Unqual!T;
+
+            memcpy(heapCopy, pMsg, Unqual!T.sizeof);
+
+            bucket.linearRemove(bucket[].drop(i).take(1));
+            return cast(T*) heapCopy;
+        }
+
+        i++;
     }
+
     return null;
 }
 
