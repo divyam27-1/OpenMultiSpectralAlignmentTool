@@ -62,9 +62,9 @@ class ProcessManager
     private size_t availableSystemRAM;
 
     private int cpuCheckStreak = 0;
-    private const int cpuCheckStreakThreshold = 5;
+    private const int cpuCheckStreakThreshold = 3;
 
-    private uint completedTasks = 0, failedTasks = 0;
+    private uint progCompleted = 0, progFailed = 0;
 
     this(ProcessRunner runner)
     {
@@ -105,7 +105,7 @@ class ProcessManager
             catch (Exception e)
             {
                 managerLogger.errorf("Critical Manager Error: %s", e.msg);
-                this.failedTasks += numImages;
+                this.progFailed += numImages;
             }
             finally
             {
@@ -148,7 +148,8 @@ class ProcessManager
             dispatchTasksToIdleWorkers();
 
             // Scaling
-            if (currentChunk.hasUnassignedWork() && !hasIdleWorkers() && canSpawn(chunkId))
+            if (currentChunk.hasUnassignedWork() && !hasIdleWorkers() && canSpawn(chunkId) == SpawnVerdict
+                .OK)
                 initiateNewWorker();
 
             Fiber.yield();
@@ -267,7 +268,6 @@ class ProcessManager
                 this.spawningMap.remove(workerId);
                 managerLogger.infof("Worker %d handshake successful. Ready for tasks.", workerId);
                 return true;
-
             }
 
             // If it's already IDLE or BUSY, a heartbeat is just a "keep-alive"
@@ -315,18 +315,18 @@ class ProcessManager
 
     private void processTaskFinish(ProcessControlBlock* pcb, uint imgIdx, TaskFinishCodes status)
     {
-        switch (status)
+        final switch (status)
         {
         case TaskFinishCodes.Success:
             currentChunk.taskStates[imgIdx] = TaskState.COMPLETED;
-            this.completedTasks++;
+            this.progCompleted++;
             break;
 
         case TaskFinishCodes.RetryRequested:
             if (currentChunk.retryCount[imgIdx] > 3)
             {
                 currentChunk.taskStates[imgIdx] = TaskState.FAILED;
-                this.failedTasks++;
+                this.progFailed++;
                 managerLogger.errorf("Task %d:%d failed after max retries", currentChunk.chunkId, imgIdx);
                 break;
             }
@@ -337,9 +337,9 @@ class ProcessManager
 
             break;
 
-        default:
+        case TaskFinishCodes.Failed:
             currentChunk.taskStates[imgIdx] = TaskState.FAILED;
-            this.failedTasks++;
+            this.progFailed++;
             break;
         }
     }
@@ -431,7 +431,8 @@ class ProcessManager
             {
             case WorkerCreationStatus.ReservingEndpoints:
                 // Right now the ID we are working on the the TempID the initializeNewWorker initialized this worker with
-                immutable ZMQEndpoints* msg = heraldMailbox.popFromBucket!(immutable ZMQEndpoints)(id);
+                immutable ZMQEndpoints* msg = heraldMailbox.popFromBucket!(
+                    immutable ZMQEndpoints)(id);
                 if (msg == null)
                     break;
                 if (msg.workerId != id)
@@ -625,8 +626,8 @@ class ProcessManager
     public int[3] getProgressStats()
     {
         return [
-            cast(int) this.completedTasks, cast(int) pcbMap.length,
-            cast(int) this.failedTasks
+            cast(int) this.progCompleted, cast(int) pcbMap.length,
+            cast(int) this.progFailed
         ];
     }
 }

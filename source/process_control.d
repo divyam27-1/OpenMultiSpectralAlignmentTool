@@ -73,8 +73,9 @@ public class Scheduler
             numImages[i] = planArray[i]["images"].array.length;
         }
 
+        import std.algorithm.iteration : sum;
         processLogger.infof("Starting Execution of %d Chunks", numChunks);
-        progBar = ProgressBar(cast(int) numChunks);
+        progBar = ProgressBar(cast(int) numImages.sum);
 
         while (!this.taskQueue.empty || this.manager.busy)
         {
@@ -103,6 +104,7 @@ public class Scheduler
             Thread.sleep(dur!"msecs"(tickIntervalMS));
         }
 
+        writeln("Control Loop Finished");
         return true;
     }
 

@@ -143,7 +143,7 @@ void main(string[] args)
     else
         mainLogger.infof("Python runtime validated at: %s", python_path);
 
-    ProcessRunner runner = new ProcessRunner(python_path, "worker.py", mode, planOutputPath);
+    ProcessRunner runner = new ProcessRunner(python_path, "persistent_worker.py", mode, planOutputPath);
     Scheduler controller = new Scheduler(runner, planOutputPath);
 
     mainLogger.info("Handoff to Scheduler. Beginning execution loop...");

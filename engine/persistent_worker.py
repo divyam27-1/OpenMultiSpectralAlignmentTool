@@ -20,13 +20,17 @@ import zmq
 
 if __name__ == "__main__":
     selfpid = os.getpid()
-    plan_path = sys.argv[1]
+    plan_path = os.environ.get("OMSPEC_PLANPATH", None)
     input_stream = os.environ.get("OMSPEC_OUTPUT_STREAM", None)
     output_stream = os.environ.get("OMSPEC_INPUT_STREAM", None)
     logdir = os.environ.get("OMSPEC_LOGDIR", None)
     
     if input_stream is None or output_stream is None:
         logging.fatal("Input or output stream environment variables not set.")
+        sys.exit(1)
+    
+    if plan_path is None:
+        logging.fatal("Plan Path Not Provided")
         sys.exit(1)
     
     if logdir is None:
@@ -40,6 +44,7 @@ if __name__ == "__main__":
     )
     
     plan = json.load(open(plan_path))
+    num_chunks = len(plan)
     logging.info(f"Worker {selfpid} started with plan {plan_path}.")
     
     context = zmq.Context()
@@ -136,8 +141,7 @@ if __name__ == "__main__":
                 
                 # Parse Task Chunk
                 task_chunk_id = payload[1]
-                task_chunk = plan.get(task_chunk_id, None)      # TODO: fix this, we cant .get() on a list
-                if task_chunk is None:
+                if task_chunk_id >= num_chunks:
                     logging.error(f"Task chunk {task_chunk_id} not found in plan.")
                     socket_out.send_string(json.dumps(
                         {
@@ -147,6 +151,7 @@ if __name__ == "__main__":
                         }
                     ))
                     continue
+                task_chunk = plan[task_chunk_id]
                 
                 # Parse Task Image
                 task_image_id = payload[2]
